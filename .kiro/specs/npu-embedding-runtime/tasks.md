@@ -10,6 +10,7 @@
   - Configure the test runner and type checking so later tasks have somewhere to put tests
   - Observable: a clean checkout installs with uv, imports the embedding package, and runs an empty test suite green
   - _Requirements: 4.1_
+  - Citation note 2026-09-05: 4.1 ("support three candidate models") is a poor anchor for scaffolding; design.md maps 4.1 to profiles.py, i.e. task 2.2, now complete. Task 1.1's true anchor is the Boundary Commitments bullet "Creation of pyproject.toml with baseline project metadata and this feature's dependency group". The citation is retained so requirement-coverage tooling stays whole, and the mismatch is recorded rather than silently reassigned.
 
 - [x] 1.2 Provision the vendor runtime wheels into the uv environment
   - Install the provider wheels from the vendor's package index (verified working 2026-09-04: direct wheel URLs from pypi.amd.com, since uv cannot resolve that index's pages), with the numpy-below-2 pin the vendor build requires
@@ -61,11 +62,12 @@
   - Observable: catching the environment error category succeeds without catching preparation or execution failures, and every error instance exposes provider, model, and stage
   - _Requirements: 8.1, 8.2_
 
-- [ ] 2.2 (P) Declare the three candidate model profiles
+- [x] 2.2 (P) Declare the three candidate model profiles
   - Capture dimension, compiled sequence length, batch size, pooling strategy, presence of a dense stage, and license gating per model
   - Encode the document and query templates for each model, including the title slot the document form requires
   - Treat the primary candidate as the initial default until the benchmark supersedes it
-  - Observable: each profile reports a compiled sequence length distinct from the model's architectural context limit, and the primary candidate's templates match the published conventions exactly
+  - Observable: each profile carries the compiled sequence length and the architectural context limit as separate fields and publishes the compiled one as the maximum input token length, and the primary candidate's templates match the published conventions exactly
+  - Spec correction 2026-09-05: the original wording required the two lengths to be "distinct". That is unsatisfiable for bge-large-en-v1.5, whose architectural limit genuinely IS 512, so meeting it literally would have required falsifying real model data. Requirement 3.6 asks only that the maximum be reported, and research.md's decision requires that the reported value be the compiled length; neither requires the two to differ.
   - _Requirements: 3.4, 3.6, 4.1, 4.2_
   - _Boundary: ModelProfiles_
   - _Depends: 2.1_
@@ -303,3 +305,6 @@
 - 2.1: `EmbedResult`/`EmbeddingContract` deliberately DEFERRED to task 5.3 - their fields are claims about a completed operation whose invariants only the producer can enforce, so declaring them now would be a stub. design.md's File Structure Plan is a whole-feature inventory, not a per-task mandate (it also lists ModelProfile, which is 2.2).
 - 2.1: error `stage` is never absent - every class carries a `default_stage`, so an error built knowing nothing still reports one. `provider`/`model_id` are None when unknown, with blank strings normalising to None so absence has one form. No error constructor raises.
 - 2.1: reviewer left 2 non-blocking test gaps in 2.1-owned code (the no-constructor-raises invariant is described in a docstring but not pinned; `DocumentText` accepting the literal title "none" is unpinned). Pick up if types/errors are hardened later.
+- 2.2: `ModelProfile` lives in `profiles.py`, NOT `types.py`. design.md was self-contradictory (File Structure Plan listed it under types.py while the profiles.py line assigns "the three ModelProfile entries" to profiles.py). Resolved toward profiles.py; verified no layering inversion since nothing imports ModelProfile from types. design.md corrected to match.
+- 2.2: `license_acceptance_url` exceeds design.md's original ModelProfile sketch but is REQUIRED - `LicenseAcceptanceRequired.acceptance_url` has no default, so requirement 4.5 cannot be satisfied without the profile supplying it. Invariant-bound to `license_gated` in both directions. design.md's sketch updated.
+- 2.2: the benchmark (6.x) may want `all-MiniLM-L6-v2` as a known-good NPU control - the model task 1.3 proved at 5.24x CPU. It would isolate "this candidate does not offload" from "the NPU path is broken". NOT added: requirement 4.1 names exactly three candidates and a test pins the set, so adding it needs a requirements change. Decide at 6.1.

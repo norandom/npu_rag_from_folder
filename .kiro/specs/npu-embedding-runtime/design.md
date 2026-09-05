@@ -155,7 +155,7 @@ tests/fixtures/benchmark-corpus/
 └── relevance.jsonl                     # Query set with pre-identified relevant chunk ids
 src/npu_rag/embedding/
 ├── __init__.py                         # Public surface, re-exports service and types only
-├── types.py                            # TextKind, ProviderChoice, EmbedResult, CapabilityReport, ModelProfile
+├── types.py                            # TextKind, ProviderChoice, ExecutionMode, DocumentText, Condition, CapabilityReport
 ├── errors.py                           # Error taxonomy discriminating environment, preparation, execution
 ├── reporting.py                        # Progress callbacks, run summaries, provider attribution
 ├── profiles.py                         # The three ModelProfile entries and their prefix templates
@@ -570,9 +570,11 @@ class ModelProfile:
     batch_size: int
     pooling: Literal["mean"]
     has_dense_stage: bool
+    architectural_context_limit: int  # the model's own limit; deliberately NOT what 3.6 publishes
     document_template: str       # e.g. 'title: {title} | text: {content}'
     query_template: str          # e.g. 'task: search result | query: {content}'
     license_gated: bool
+    license_acceptance_url: str | None  # required when gated: LicenseAcceptanceRequired has no default
 ```
 
 ### Physical Data Model
