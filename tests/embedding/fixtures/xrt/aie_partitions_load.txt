@@ -1,0 +1,11 @@
+
+---------------------------
+[00c6:00:01.1] : NPU Strix
+---------------------------
+AIE Partitions
+Partition Index   : 0
+  Columns: [0, 1, 2, 3, 4, 5, 6, 7]
+  HW Contexts:
+|PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
+|--------------------|-----------|------------|------------|-----|---------|
+|24816               |0          |6047        |0           |0    |Normal   |

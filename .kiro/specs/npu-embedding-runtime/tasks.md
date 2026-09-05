@@ -27,7 +27,7 @@
   - Observable: verdict recorded in the research log with throughput ratio, compiled-artifact presence, and captured hardware-context evidence
   - _Requirements: 1.5_
 
-- [ ] 1.4 Wrap the vendor management utility for telemetry reads
+- [x] 1.4 Wrap the vendor management utility for telemetry reads
   - Invoke the platform report to read estimated power, and the partition report to read column occupancy
   - Parse both into typed values, treating an absent utility or unsupported reading as data rather than an exception
   - Support repeated polling so a caller can sample during a running workload
@@ -292,3 +292,7 @@
 - 1.2: the NuGet native dir ships its own build of the four stranded DLLs, DIFFERENT from the voe wheel's (EP is 119 MB vs 184 MB). The provenance split - four DLLs from the voe wheel, vaiml.dll + vaip_config.json from NuGet - is load-bearing and must not be "simplified" later.
 - 1.2: stock `onnxruntime` and vendor `onnxruntime-vitisai` own the same import package; resolution is REPLACEMENT, enforced by verify-and-repair rather than install order. A stale `onnxruntime-<stock>.dist-info` residue persists claiming stock ownership over vendor files and cannot be removed without deleting vendor files.
 - 1.2: `vaip_config.json` resolves at `Path(onnxruntime.__file__).parent / 'capi' / 'vaip_config.json'` - this is the `config_file` provider option contract for task 4.3.
+- 1.4: `xrt-smi` exits 0 even when it REJECTS the requested report - the exit code carries no validity information, only parsing does. Never trust returncode from this tool.
+- 1.4: `Estimated Power` intermittently reads `N/A` at idle even where power reporting IS supported (2/39 polls measured). `N/A` must never be folded to 0.0 W. Power needs three states: reported / unavailable-this-sample / unsupported-by-platform.
+- 1.4: for task 6.2 - design.md's `PowerSampler` (supported()->bool, sample_watts()->float|None) cannot express the middle state. When mapping to `Measurement`, keep UNSUPPORTED vs UNAVAILABLE distinguishable in the reason text so requirement 6.8's omission stays specific; drop mid-run N/A samples from the integral and report a missed-sample count, never interpolate.
+- 1.4: the AST guard in tests/embedding/test_package_baseline.py enforces only the OUTER package boundary (no non-embedding `npu_rag.*`); it permits ANY intra-embedding import, so it does not enforce design.md's layer order. A module-scoped layer guard lives in test_xrt.py; a package-wide one belongs with the deferred hardening when providers/base.py lands.

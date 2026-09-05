@@ -1,0 +1,7 @@
+
+---------------------------
+[00c6:00:01.1] : NPU Strix
+---------------------------
+AIE Partitions
+  No hardware contexts running on device
+

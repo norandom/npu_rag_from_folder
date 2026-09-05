@@ -1,0 +1,8 @@
+
+---------------------------
+[0000:c5:00.1] : NPU Phoenix
+---------------------------
+Platform
+  Name                   : NPU Phoenix 
+  Power Mode             : Default 
+  Total Columns          : 5 

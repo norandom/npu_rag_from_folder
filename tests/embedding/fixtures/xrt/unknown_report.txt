@@ -1,0 +1,29 @@
+ERROR: No report generator found for report: 'bogus-report'
+: invalid argument
+[38;5;3m
+COMMAND: [38;5;140mexamine
+[39m[38;5;3m
+DESCRIPTION: [38;5;111mThis command will 'examine' the state of the system/device and will generate a report of interest
+               in a text or JSON format.
+[39m[38;5;3m
+USAGE: [38;5;252mxrt-smi examine [-h] [-d arg] [-f arg] [-o arg] [-r arg]
+[39m[38;5;3m
+OPTIONS:
+[39m[38;5;65m  -d, --device       [38;5;111m- The Bus:Device.Function (e.g., 0000:d8:00.0) device of interest
+[39m[38;5;65m  -f, --format       [38;5;111m- Report output format. Valid values are:
+                       	JSON        - Latest JSON schema
+                       	JSON-2020.2 - JSON 2020.2 schema
+[39m[38;5;65m  -h, --help         [38;5;111m- Help to use this sub-command
+[39m[38;5;65m  -o, --output       [38;5;111m- Direct the output to the given file
+[39m[38;5;65m  -r, --report       [38;5;111m- The type of report to be produced. Reports currently available are:
+                         aie-partitions - AIE partition information
+                         all            - All known reports are produced
+                         host           - Host information
+                         platform       - Platforms flashed on the device
+[39m
+[38;5;3m
+GLOBAL OPTIONS:
+[39m[38;5;65m  --verbose          [38;5;111m- Turn on verbosity
+[39m[38;5;65m  --batch            [38;5;111m- Enable batch mode (disables escape characters)
+[39m[38;5;65m  --force            [38;5;111m- When possible, force an operation
+[39m

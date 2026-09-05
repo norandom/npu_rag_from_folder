@@ -157,6 +157,15 @@ That file also reports `Model data type` and `Device data type`, which is how we
 - **The compiled artifact is `.rai`**, cached under `<cache_dir>/<cache_key>/`. This is the preparation artifact the ArtifactStore manages; its presence (rather than JSON alone) is itself a signal that compilation genuinely succeeded.
 - Static shapes must be pinned before compilation — HF exports carry `batch_size`/`sequence_length` symbolic dims that must be rewritten to concrete values.
 
+### Telemetry findings from implementing the wrapper (2026-09-05, task 1.4)
+
+Two behaviours of `xrt-smi` surfaced during implementation and were independently reproduced by the reviewer. Both change how telemetry must be consumed.
+
+- **`Estimated Power` intermittently reads `N/A` even where power reporting is supported.** Measured at idle on this machine: the implementer saw 4 consecutive `N/A` then 4 consecutive `0.002 W` in 8 polls; the reviewer independently saw `N/A` in 2 of 39 polls. Earlier probes recorded only steady `0.001 W` idle / `0.44 W` load, so this is new. Consequence: `N/A` is a *transient* condition, not only the permanent PHX/HPT/Linux unsupported signal, and it must never be folded to `0.0 W` — doing so would silently deflate requirement 6.2's integrated energy. Power therefore needs **three** states, not two: reported, unavailable-this-sample, and unsupported-by-platform.
+- **`xrt-smi` exits 0 even when it rejects the request.** `examine --report bogus-report` prints an error and returns exit code 0. The exit status carries no validity information whatsoever; only parsing the output can establish whether a reading was obtained. Any code that trusts the return code will treat garbage as success.
+
+Implication for task 6.2: the `PowerSampler` protocol in this design exposes `supported() -> bool` and `sample_watts() -> float | None`, which cannot express the middle state. When mapping onto `Measurement(value, unavailable_reason)`, the reason text must preserve whether a sample was *unsupported* or merely *unavailable*, so requirement 6.8's recorded omission stays specific. A mid-run `N/A` should be dropped from the integral with a missed-sample count reported in the methodology (7.2) — never interpolated.
+
 ## Architecture Pattern Evaluation
 
 | Option | Description | Strengths | Risks / Limitations | Notes |

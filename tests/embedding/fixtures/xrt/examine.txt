@@ -1,0 +1,26 @@
+System Configuration
+  OS Name              : Windows NT
+  Release              : 26200.9168
+  Machine              : x86_64
+  CPU Cores            : 24
+  Memory               : 24184 MB
+  Distribution         : Windows 11 Pro
+  Model                : G1628-04
+  BIOS Vendor          : American Megatrends International, LLC.
+  BIOS Version         : 2.10
+  Processor            : AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+
+XRT
+  Version              : 2.21.0
+  Branch               : HEAD
+  Hash                 : 15e6319be8de1e76a6150111a3861729e988fdb5
+  Hash Date            : 2026-05-07 16:04:09
+  NPU Driver Version   : 32.0.20102.3930
+  NPU Firmware Version : 1.1.2.64
+
+Device(s) Present
+|BDF             |Name       |
+|----------------|-----------|
+|[00c6:00:01.1]  |NPU Strix  |
+
+

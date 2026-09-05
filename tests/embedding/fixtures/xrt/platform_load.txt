@@ -1,0 +1,10 @@
+
+---------------------------
+[00c6:00:01.1] : NPU Strix
+---------------------------
+Platform
+  Name                   : NPU Strix 
+  Power Mode             : Default 
+  Total Columns          : 8 
+
+Estimated Power          : 0.438 Watts
