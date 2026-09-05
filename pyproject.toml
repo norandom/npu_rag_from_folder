@@ -1,0 +1,49 @@
+[project]
+name = "npu-rag"
+version = "0.1.0"
+description = "NPU-accelerated local retrieval over a personal document archive"
+requires-python = ">=3.12,<3.13"
+
+# Baseline dependency set. Vendor NPU runtime packages are deliberately absent:
+# they are published only on AMD's private index (https://pypi.amd.com/simple),
+# which uv cannot resolve, so they are installed by explicit wheel URL into the
+# optional "npu" group below. Keeping them out of the default set is what lets a
+# downstream consumer install this package with a plain `uv sync`.
+dependencies = [
+    # numpy is held below 2 across the whole project: the AMD provider wheels are
+    # built against the NumPy 1.x ABI, so a 2.x resolution here would break the
+    # environment the moment the npu group is added to it.
+    "numpy<2",
+    "onnxruntime>=1.20",
+    "transformers>=4.44",
+    "tokenizers>=0.20",
+    "huggingface-hub>=0.26",
+    "optimum>=1.23",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "mypy>=1.13",
+]
+# Populated with direct wheel URLs from AMD's package index. Installed on demand
+# with `uv sync --group npu`, never by default.
+npu = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/npu_rag"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+xfail_strict = true
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true

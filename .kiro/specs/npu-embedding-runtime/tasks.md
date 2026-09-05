@@ -4,7 +4,7 @@
 
 - [ ] 1. Foundation: environment, provisioning, and the gating spike
 
-- [ ] 1.1 Establish the Python project baseline
+- [x] 1.1 Establish the Python project baseline
   - Create the project manifest with a uv-managed dependency set and the package skeleton for the embedding domain
   - Declare the baseline dependency group; keep vendor-runtime packages out of the default group so packaging stays viable for downstream consumers
   - Configure the test runner and type checking so later tasks have somewhere to put tests
@@ -279,3 +279,11 @@
   - _Requirements: 3.5, 3.10, 8.1, 8.2_
   - _Boundary: postprocess, errors_
   - _Depends: 5.2, 2.1_
+
+## Implementation Notes
+- 1.1: canonical validation set = `uv sync`, `uv run pytest`, `uv run mypy`, `uv run python -c "import npu_rag.embedding"`; vendor group via `uv sync --group npu`.
+- 1.1: `numpy<2` is pinned project-wide (not only in the npu group) so adding vendor wheels later cannot force a NumPy 2.x ABI break.
+- 1.1: stock `onnxruntime` and vendor `onnxruntime-vitisai` both own the `onnxruntime` import package - task 1.2 must decide replacement vs coexistence, not install both blindly.
+- 1.1: `optimum` resolved to 2.x and `transformers` to 5.x, beyond design.md assumptions - task 3.2 must re-verify the ONNX export API or pin `optimum<2`.
+- 1.1: tasks.md cites `_Requirements: 4.1_` for 1.1 but design.md maps 4.1 to profiles.py (task 2.2); 1.1's true anchor is the Boundary Commitments pyproject bullet. Fix the citation when 2.2 lands.
+- 1.1: reviewer note - the import-boundary AST guard in tests skips relative imports and passes vacuously if the package is deleted; harden when providers/base.py lands.
