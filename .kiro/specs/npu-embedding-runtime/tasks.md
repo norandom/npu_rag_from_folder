@@ -53,7 +53,7 @@
   - Observable: fetching the primary candidate's configuration with the stored credential succeeds, and both open comparators remain fetchable without one
   - _Requirements: 4.5_
 
-- [ ] 2. Foundation: shared contracts
+- [x] 2. Foundation: shared contracts
 
 - [x] 2.1 Define the domain types and the error taxonomy
   - Model text kind, provider choice, execution mode, and the document form that carries a title alongside content
@@ -72,7 +72,7 @@
   - _Boundary: ModelProfiles_
   - _Depends: 2.1_
 
-- [ ] 2.3 (P) Build progress reporting and run summaries
+- [x] 2.3 (P) Build progress reporting and run summaries
   - Provide a progress callback carrying completed and remaining counts, usable identically by every backend
   - Summarize a completed run with elapsed time, input count, provider served, execution mode, and truncation count
   - Report completed count when an operation is interrupted before finishing
@@ -308,3 +308,8 @@
 - 2.2: `ModelProfile` lives in `profiles.py`, NOT `types.py`. design.md was self-contradictory (File Structure Plan listed it under types.py while the profiles.py line assigns "the three ModelProfile entries" to profiles.py). Resolved toward profiles.py; verified no layering inversion since nothing imports ModelProfile from types. design.md corrected to match.
 - 2.2: `license_acceptance_url` exceeds design.md's original ModelProfile sketch but is REQUIRED - `LicenseAcceptanceRequired.acceptance_url` has no default, so requirement 4.5 cannot be satisfied without the profile supplying it. Invariant-bound to `license_gated` in both directions. design.md's sketch updated.
 - 2.2: the benchmark (6.x) may want `all-MiniLM-L6-v2` as a known-good NPU control - the model task 1.3 proved at 5.24x CPU. It would isolate "this candidate does not offload" from "the NPU path is broken". NOT added: requirement 4.1 names exactly three candidates and a test pins the set, so adding it needs a requirements change. Decide at 6.1.
+- 2.3: TASK 4.1 MUST ADD `fallback_reason` to `RunSummary`. design.md's Requirements Traceability maps 2.4/2.5 to `RunSummary.fallback_reason`, but those requirements belong to task 4.1, so 2.3 correctly omitted the field. Do not lose this: without it 2.5 (auto must report why the NPU was not used) has no carrier.
+- 2.3: design.md's `EmbedResult` (flat) duplicates four fields verbatim with `RunSummary` - provider_served, execution_mode, elapsed_seconds, input_count. Task 5.3 should consider composing EmbedResult around a RunSummary so 2.6/8.6 have ONE producer, but that is a design amendment 5.3 must raise, not something 2.3 could decide.
+- 2.3: a clean early exit from a run is NOT success. `_interruption()` returns None only when the run both raised nothing AND finished; exiting early without an error records "ended without an error after N of M inputs". Found by a second RED phase and independently confirmed correct by review (reverting it fails 10 tests). Requirement 8.6 reports COMPLETION, so success must never be claimed over a partial batch.
+- 2.3: a progress callback that raises inside `RunTracker.__enter__` means `__exit__` never runs, so no summary is built or delivered. Harmless today (zero work done at that point) but task 5.3 should know.
+- 2.3: `RunTracker` is SINGLE-USE - re-entering raises RuntimeError. Reuse previously produced a false success (a second partial run reported interruption=None over a full count). Task 5.3 must construct a tracker per embed() call, never cache one on the service; this aligns with 2.7's invariant that a backend is bound once per operation.
