@@ -2,7 +2,7 @@
 
 > **Gating note**: Task 1.3 decides whether NPU execution is reachable in-process or only in isolation. Task 4.4 is conditional on its outcome and must not be implemented speculatively. Everything from major task 3 onward assumes 1.3 has produced a verdict.
 
-- [ ] 1. Foundation: environment, provisioning, and the gating spike
+- [x] 1. Foundation: environment, provisioning, and the gating spike
 
 - [x] 1.1 Establish the Python project baseline
   - Create the project manifest with a uv-managed dependency set and the package skeleton for the embedding domain
@@ -35,7 +35,7 @@
   - _Requirements: 1.1, 6.2_
   - _Boundary: XrtSmiWrapper_
 
-- [ ] 1.5 Implement the environment capability check
+- [x] 1.5 Implement the environment capability check
   - Evaluate device presence, runtime installation, driver minimum, provider registration, and required environment variables as independent conditions
   - Carry observed value, required value, and a remediation step on every unsatisfied condition
   - Derive the execution-mode verdict from provider registration, formalizing what the spike established
@@ -296,3 +296,6 @@
 - 1.4: `Estimated Power` intermittently reads `N/A` at idle even where power reporting IS supported (2/39 polls measured). `N/A` must never be folded to 0.0 W. Power needs three states: reported / unavailable-this-sample / unsupported-by-platform.
 - 1.4: for task 6.2 - design.md's `PowerSampler` (supported()->bool, sample_watts()->float|None) cannot express the middle state. When mapping to `Measurement`, keep UNSUPPORTED vs UNAVAILABLE distinguishable in the reason text so requirement 6.8's omission stays specific; drop mid-run N/A samples from the integral and report a missed-sample count, never interpolate.
 - 1.4: the AST guard in tests/embedding/test_package_baseline.py enforces only the OUTER package boundary (no non-embedding `npu_rag.*`); it permits ANY intra-embedding import, so it does not enforce design.md's layer order. A module-scoped layer guard lives in test_xrt.py; a package-wide one belongs with the deferred hardening when providers/base.py lands.
+- 1.5: design.md drift - the File Structure Plan lists `CapabilityReport` under `types.py`, but the CapabilityChecker section sketches `ExecutionMode`/`Condition`/`CapabilityReport` inline. They live in `capability.py` because `types.py` belongs to task 2.1. When 2.1 lands, decide: move and re-export, or record the drift in design.md.
+- 1.5: `VENDOR_PAYLOAD_FILES` in capability.py duplicates the payload filenames in tools/provision_npu.py. The duplication is FORCED by design.md Out of Boundary (the package must not depend on tools/). The two lists must be changed together.
+- 1.5: reviewer left 5 non-blocking test-hardening suggestions (empty-string remediation invariant, driver-exactly-equal boundary, hollow-onnxruntime branch, `_payload_state(None)`, and wrapping the `XrtSmiWrapper()` construction in a guard so the never-raise promise is structural rather than dependent on xrt.py internals). Pick these up if a later task hardens `environment/`.
