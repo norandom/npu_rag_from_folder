@@ -54,7 +54,7 @@
 
 - [ ] 2. Foundation: shared contracts
 
-- [ ] 2.1 Define the domain types and the error taxonomy
+- [x] 2.1 Define the domain types and the error taxonomy
   - Model text kind, provider choice, execution mode, and the document form that carries a title alongside content
   - Structure errors so environment, preparation, and execution are distinguishable by type rather than by message text
   - Carry provider, model, and failing stage on every error
@@ -296,6 +296,10 @@
 - 1.4: `Estimated Power` intermittently reads `N/A` at idle even where power reporting IS supported (2/39 polls measured). `N/A` must never be folded to 0.0 W. Power needs three states: reported / unavailable-this-sample / unsupported-by-platform.
 - 1.4: for task 6.2 - design.md's `PowerSampler` (supported()->bool, sample_watts()->float|None) cannot express the middle state. When mapping to `Measurement`, keep UNSUPPORTED vs UNAVAILABLE distinguishable in the reason text so requirement 6.8's omission stays specific; drop mid-run N/A samples from the integral and report a missed-sample count, never interpolate.
 - 1.4: the AST guard in tests/embedding/test_package_baseline.py enforces only the OUTER package boundary (no non-embedding `npu_rag.*`); it permits ANY intra-embedding import, so it does not enforce design.md's layer order. A module-scoped layer guard lives in test_xrt.py; a package-wide one belongs with the deferred hardening when providers/base.py lands.
-- 1.5: design.md drift - the File Structure Plan lists `CapabilityReport` under `types.py`, but the CapabilityChecker section sketches `ExecutionMode`/`Condition`/`CapabilityReport` inline. They live in `capability.py` because `types.py` belongs to task 2.1. When 2.1 lands, decide: move and re-export, or record the drift in design.md.
+- 1.5: design.md drift - the File Structure Plan lists `CapabilityReport` under `types.py`, but the CapabilityChecker section sketches `ExecutionMode`/`Condition`/`CapabilityReport` inline. They live in `capability.py` because `types.py` belongs to task 2.1. RESOLVED by 2.1: moved to types.py and re-exported from capability.py; identity preserved. design.md's File Structure Plan now matches reality for these three types.
 - 1.5: `VENDOR_PAYLOAD_FILES` in capability.py duplicates the payload filenames in tools/provision_npu.py. The duplication is FORCED by design.md Out of Boundary (the package must not depend on tools/). The two lists must be changed together.
 - 1.5: reviewer left 5 non-blocking test-hardening suggestions (empty-string remediation invariant, driver-exactly-equal boundary, hollow-onnxruntime branch, `_payload_state(None)`, and wrapping the `XrtSmiWrapper()` construction in a guard so the never-raise promise is structural rather than dependent on xrt.py internals). Pick these up if a later task hardens `environment/`.
+- 2.1: `CONDITION_PROVIDER_REGISTERED` had to move to types.py with `CapabilityReport` because that report's `__post_init__` keys on it; leaving it behind would force a right-to-left import and a cycle. The other four condition names stay in capability.py. Re-exported and guarded by an AST test against local re-definition.
+- 2.1: `EmbedResult`/`EmbeddingContract` deliberately DEFERRED to task 5.3 - their fields are claims about a completed operation whose invariants only the producer can enforce, so declaring them now would be a stub. design.md's File Structure Plan is a whole-feature inventory, not a per-task mandate (it also lists ModelProfile, which is 2.2).
+- 2.1: error `stage` is never absent - every class carries a `default_stage`, so an error built knowing nothing still reports one. `provider`/`model_id` are None when unknown, with blank strings normalising to None so absence has one form. No error constructor raises.
+- 2.1: reviewer left 2 non-blocking test gaps in 2.1-owned code (the no-constructor-raises invariant is described in a docstring but not pinned; `DocumentText` accepting the literal title "none" is unpinned). Pick up if types/errors are hardened later.

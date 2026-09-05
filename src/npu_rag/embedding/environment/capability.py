@@ -47,7 +47,10 @@ environment is worse than no check.
 
 This module sits in the ``environment`` layer of design.md's dependency
 direction (``types, errors -> reporting -> profiles -> environment -> models ->
-providers -> service -> bench``). Within that layer it uses ``xrt``; it imports
+providers -> service -> bench``). It takes ``ExecutionMode``, ``Condition`` and
+``CapabilityReport`` from ``types`` - the leftmost layer, which owns them per
+the File Structure Plan - and re-exports them here, so importers written against
+this module keep working. Within its own layer it uses ``xrt``; it imports
 nothing from any layer to its right.
 """
 
@@ -58,7 +61,6 @@ import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -67,6 +69,12 @@ from npu_rag.embedding.environment.xrt import (
     PlatformTelemetry,
     PowerStatus,
     XrtSmiWrapper,
+)
+from npu_rag.embedding.types import (
+    CONDITION_PROVIDER_REGISTERED,
+    CapabilityReport,
+    Condition,
+    ExecutionMode,
 )
 
 __all__ = [
@@ -121,10 +129,13 @@ VENDOR_PAYLOAD_FILES = (
     "vaip_config.json",
 )
 
+#: The condition names this checker produces. ``CONDITION_PROVIDER_REGISTERED``
+#: is not among them: it is imported from ``types`` above, because
+#: ``CapabilityReport``'s invariant keys on it and the two must not be able to
+#: drift apart.
 CONDITION_NPU_DEVICE = "npu_device_present"
 CONDITION_VENDOR_RUNTIME = "vendor_runtime_installed"
 CONDITION_DRIVER_MINIMUM = "driver_meets_documented_minimum"
-CONDITION_PROVIDER_REGISTERED = "execution_provider_registered"
 CONDITION_ENVIRONMENT_VARIABLES = "vendor_environment_variables"
 
 #: The supported repair for every environment fault this check can report. It
@@ -139,92 +150,6 @@ _PROVISION_HINT = (
 )
 
 _DIGITS = re.compile(r"\d+")
-
-
-class ExecutionMode(StrEnum):
-    """Where NPU execution is reachable from, if anywhere (requirement 1.5)."""
-
-    IN_PROCESS = "in_process"
-    ISOLATED = "isolated"
-    UNAVAILABLE = "unavailable"
-
-
-@dataclass(frozen=True)
-class Condition:
-    """One environment condition, evaluated on its own (requirement 1.2).
-
-    Invariant: an unsatisfied condition carries ``observed``, ``required`` and
-    ``remediation``, which is requirement 1.3 made structural. A satisfied
-    condition may carry them and usually does - the driver condition reports
-    both versions whether or not it passes, because those numbers are the whole
-    point of looking.
-    """
-
-    name: str
-    satisfied: bool
-    observed: str | None
-    required: str | None
-    remediation: str | None
-
-    def __post_init__(self) -> None:
-        if self.satisfied:
-            return
-        missing = [
-            field
-            for field in ("observed", "required", "remediation")
-            if not getattr(self, field)
-        ]
-        if missing:
-            raise ValueError(
-                f"unsatisfied condition {self.name!r} must carry "
-                f"{', '.join(missing)}: an unmet condition without a "
-                "remediation is a dead end for the operator (requirement 1.3)"
-            )
-
-
-@dataclass(frozen=True)
-class CapabilityReport:
-    """Every condition, the execution-mode verdict, and run provenance.
-
-    ``driver_version`` and ``runtime_version`` are carried here because
-    requirement 6.6 builds the benchmark's run context from this report, so
-    version provenance has exactly one source.
-    """
-
-    conditions: tuple[Condition, ...]
-    execution_mode: ExecutionMode
-    driver_version: str | None
-    runtime_version: str | None
-    device_name: str | None
-    #: Whether *this platform* reports estimated power at all (Strix and later
-    #: do; PHX/HPT and Linux do not). Not whether the most recent sample carried
-    #: a number - ``N/A`` occurs intermittently here on a part that does support
-    #: it, and requirement 6.8 needs those two omissions to stay distinct.
-    power_reporting_supported: bool
-
-    def __post_init__(self) -> None:
-        names = [condition.name for condition in self.conditions]
-        if len(set(names)) != len(names):
-            raise ValueError(f"duplicate condition names in report: {names}")
-        if self.execution_mode is not ExecutionMode.IN_PROCESS:
-            return
-        registered = {
-            condition.name: condition.satisfied for condition in self.conditions
-        }.get(CONDITION_PROVIDER_REGISTERED)
-        if registered is not True:
-            raise ValueError(
-                "execution_mode IN_PROCESS requires a satisfied "
-                f"{CONDITION_PROVIDER_REGISTERED!r} condition: the provider "
-                "registering in this interpreter is the only evidence that "
-                "in-process NPU execution is reachable"
-            )
-
-    def condition(self, name: str) -> Condition:
-        """The named condition. An unknown name is a programming error."""
-        for condition in self.conditions:
-            if condition.name == name:
-                return condition
-        raise KeyError(name)
 
 
 @dataclass(frozen=True)
