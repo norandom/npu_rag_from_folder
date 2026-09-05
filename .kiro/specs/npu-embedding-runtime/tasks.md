@@ -11,7 +11,7 @@
   - Observable: a clean checkout installs with uv, imports the embedding package, and runs an empty test suite green
   - _Requirements: 4.1_
 
-- [ ] 1.2 Provision the vendor runtime wheels into the uv environment
+- [x] 1.2 Provision the vendor runtime wheels into the uv environment
   - Install the provider wheels from the vendor's package index (verified working 2026-09-04: direct wheel URLs from pypi.amd.com, since uv cannot resolve that index's pages), with the numpy-below-2 pin the vendor build requires
   - Apply the voe wheel workaround: relocate the four backend libraries stranded by the wheel's mismatched data-directory version into the runtime's provider directory, and encode this step so it survives environment rebuilds
   - This machine is uv/venv only — no conda anywhere, and no exe installer unless the BF16 compiler library proves unobtainable any other way
@@ -287,3 +287,8 @@
 - 1.1: `optimum` resolved to 2.x and `transformers` to 5.x, beyond design.md assumptions - task 3.2 must re-verify the ONNX export API or pin `optimum<2`.
 - 1.1: tasks.md cites `_Requirements: 4.1_` for 1.1 but design.md maps 4.1 to profiles.py (task 2.2); 1.1's true anchor is the Boundary Commitments pyproject bullet. Fix the citation when 2.2 lands.
 - 1.1: reviewer note - the import-boundary AST guard in tests skips relative imports and passes vacuously if the package is deleted; harden when providers/base.py lands.
+- 1.2: provisioning lives in `tools/`, NOT in the package, because design.md Out of Boundary says this spec detects and reports environment state and does not mutate the system. design.md's File Structure Plan has no `tools/` entry and says "Modified Files: None" - that is known drift, not unmanaged scope. Record it in design.md when a later task touches that section.
+- 1.2: an explicit `uv sync` DROPS the npu group and leaves `onnxruntime` unimportable (`AttributeError: no attribute '__version__'`). Re-run `uv run python -m tools.provision_npu` to repair. Measured correction: `uv run pytest` and `uv run mypy` do NOT de-provision - only an explicit `uv sync` does.
+- 1.2: the NuGet native dir ships its own build of the four stranded DLLs, DIFFERENT from the voe wheel's (EP is 119 MB vs 184 MB). The provenance split - four DLLs from the voe wheel, vaiml.dll + vaip_config.json from NuGet - is load-bearing and must not be "simplified" later.
+- 1.2: stock `onnxruntime` and vendor `onnxruntime-vitisai` own the same import package; resolution is REPLACEMENT, enforced by verify-and-repair rather than install order. A stale `onnxruntime-<stock>.dist-info` residue persists claiming stock ownership over vendor files and cannot be removed without deleting vendor files.
+- 1.2: `vaip_config.json` resolves at `Path(onnxruntime.__file__).parent / 'capi' / 'vaip_config.json'` - this is the `config_file` provider option contract for task 4.3.

@@ -26,9 +26,20 @@ dev = [
     "pytest>=8.3",
     "mypy>=1.13",
 ]
-# Populated with direct wheel URLs from AMD's package index. Installed on demand
-# with `uv sync --group npu`, never by default.
-npu = []
+# Vendor NPU runtime, installed on demand with `uv sync --group npu`, never by
+# default. Direct wheel URLs are mandatory: uv cannot resolve
+# https://pypi.amd.com/simple (its simple-index pages deviate from the standard
+# and uv reports "no versions of onnxruntime-vitisai"), but it installs the same
+# wheels cleanly when they are named by URL.
+#
+# onnxruntime-vitisai ships the `onnxruntime` import package itself and therefore
+# REPLACES the stock onnxruntime above inside an NPU-provisioned environment.
+# That replacement is intended, not incidental - see docs/provisioning.md,
+# "The onnxruntime collision". `tools/provision_npu.py` verifies it took effect.
+npu = [
+    "onnxruntime-vitisai @ https://pypi.amd.com/packages/onnxruntime-vitisai/onnxruntime_vitisai-1.23.2-cp312-cp312-win_amd64.whl",
+    "voe @ https://pypi.amd.com/packages/voe/voe-1.7.0-py3-none-win_amd64.whl",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -41,9 +52,12 @@ packages = ["src/npu_rag"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 xfail_strict = true
+# `tools/` is repo tooling, not shipped code (the wheel packages only
+# src/npu_rag), so it is reachable via the repo root rather than the install.
+pythonpath = ["."]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests"]
+files = ["src", "tests", "tools"]
 strict = true
 warn_unreachable = true
