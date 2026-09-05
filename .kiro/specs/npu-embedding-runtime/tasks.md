@@ -83,7 +83,7 @@
 
 - [ ] 3. Model preparation
 
-- [ ] 3.1 Implement model acquisition with license-gate handling
+- [x] 3.1 Implement model acquisition with license-gate handling
   - Download model weights and record the resolved revision so a silently changed upstream artifact is detectable
   - Detect a gated repository whose terms have not been accepted, and surface the acceptance requirement specifically
   - Observable: requesting the gated primary candidate without accepted terms raises the licensing error carrying the acceptance step, not a generic transport failure
@@ -313,3 +313,10 @@
 - 2.3: a clean early exit from a run is NOT success. `_interruption()` returns None only when the run both raised nothing AND finished; exiting early without an error records "ended without an error after N of M inputs". Found by a second RED phase and independently confirmed correct by review (reverting it fails 10 tests). Requirement 8.6 reports COMPLETION, so success must never be claimed over a partial batch.
 - 2.3: a progress callback that raises inside `RunTracker.__enter__` means `__exit__` never runs, so no summary is built or delivered. Harmless today (zero work done at that point) but task 5.3 should know.
 - 2.3: `RunTracker` is SINGLE-USE - re-entering raises RuntimeError. Reuse previously produced a false success (a second partial run reported interruption=None over a full count). Task 5.3 must construct a tracker per embed() call, never cache one on the service; this aligns with 2.7's invariant that a backend is bound once per operation.
+- 3.1: A GATED REPO'S METADATA IS PUBLIC. `model_info(gated_repo, token=False)` returns 200 with `gated='manual'` and a valid sha; the gate closes on FILE FETCH, not metadata. Confirmed independently by review. Task 3.3 must not assume acquisition fails before any bytes move.
+- 3.1: a commit-pinned file already in the HF cache is served with NO request, so gate tests are cache-order-dependent. Live gate tests must use an isolated `cache_dir` or they pass cold and fail warm.
+- 3.1: anonymity must be requested as `token=False`, NOT `token=None` - None lets huggingface_hub silently pick up an ambient token, which would make an anonymous-gate test pass for the wrong reason.
+- 3.1: `AcquiredModel.revision` is the 40-hex commit the manifest should record (task 3.3). `HfCredential.reveal()` is the single credential unwrap point in the package; the credential renders as `<redacted>` everywhere else and mapped errors raise `from None` so no chained cause can print it.
+- 3.1: acquisition deliberately does NOT use `RunTracker` - RunSummary requires provider_served and execution_mode, which acquisition genuinely lacks; forcing one would fabricate a 2.6 attribution. It uses a bare ProgressCallback instead. Confirmed correct by review.
+- 3.1: two non-blocking test gaps left open - the 40-hex revision boundary is not pinned (relaxing to {39,41} survives), and `parse_dotenv`'s deliberate refusal to strip inline `#` comments is documented but not tested (adding `.split('#')[0]` survives, and would silently truncate a credential). Close both if models/ is hardened later.
+- 3.1: `models/__init__.py` still exports nothing, so `acquire_model` is reachable only by full module path. Task 3.3 may want the re-export.
