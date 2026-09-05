@@ -1,0 +1,11 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# project artifacts (large, machine-specific)
+artifacts/
+benchmarks/

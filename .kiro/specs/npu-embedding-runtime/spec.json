@@ -1,0 +1,22 @@
+{
+  "feature_name": "npu-embedding-runtime",
+  "created_at": "2026-09-01T13:47:21Z",
+  "updated_at": "2026-09-01T15:02:10Z",
+  "language": "en",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": false
+}
