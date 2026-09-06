@@ -413,12 +413,29 @@ class RunTracker:
         input_count: int,
         progress: ProgressCallback | None = None,
         on_finish: SummaryCallback | None = None,
+        fallback_reason: str | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._operation = _checked_label(operation, "operation")
         self._provider_served = _checked_served(provider_served)
         self._execution_mode = execution_mode
         self._input_count = _checked_count(input_count, "input_count")
+        # Validated here rather than only at ``__exit__``. The summary is built
+        # when the run ends, which for an interrupted run is while an exception
+        # is already propagating; a `RunSummary` rejecting the pair there would
+        # replace the caller's real failure with a reporting one. Task 5.3 added
+        # this parameter: until then `RunSummary.fallback_reason` had no
+        # producer, so requirement 2.5's carrier could never be filled by the
+        # component that knows the reason.
+        if fallback_reason is not None:
+            _checked_label(fallback_reason, "fallback_reason")
+            if self._provider_served is not ProviderChoice.CPU:
+                raise ValueError(
+                    "fallback_reason explains why the NPU was not used, so the "
+                    f"CPU must be what served; got provider_served="
+                    f"{self._provider_served.value!r} (requirement 2.5)"
+                )
+        self._fallback_reason = fallback_reason
         self._progress = progress
         self._on_finish = on_finish
         self._clock = clock
@@ -503,6 +520,7 @@ class RunTracker:
             truncated_count=self._truncated,
             elapsed_seconds=max(0.0, self._clock() - self._started),
             interruption=self._interruption(exc_type, exc),
+            fallback_reason=self._fallback_reason,
         )
         if self._on_finish is not None:
             self._on_finish(self._result)

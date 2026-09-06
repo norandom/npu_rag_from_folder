@@ -78,6 +78,7 @@ def make_tracker(
     execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS,
     progress: ProgressCallback | None = None,
     on_finish: SummaryCallback | None = None,
+    fallback_reason: str | None = None,
     clock: Callable[[], float] | None = None,
 ) -> RunTracker:
     return RunTracker(
@@ -87,6 +88,7 @@ def make_tracker(
         input_count=input_count,
         progress=progress,
         on_finish=on_finish,
+        fallback_reason=fallback_reason,
         clock=clock if clock is not None else Clock(0.0),
     )
 
@@ -1237,6 +1239,82 @@ def test_reporting_does_not_redefine_the_shared_vocabulary() -> None:
     }
 
     assert defined.isdisjoint({"ProviderChoice", "ExecutionMode"})
+
+
+# --------------------------------------------------------------------------
+# The fallback reason a tracker carries (requirement 2.5, task 5.3)
+#
+# `RunSummary` has carried this field since task 4.1, with no producer: the
+# tracker built every summary with `fallback_reason=None`, so requirement 2.5's
+# carrier could not be filled by the component that knows the reason. Task 5.3
+# threads it through. These tests cover the validation that came with it, which
+# review found shipped unverified.
+# --------------------------------------------------------------------------
+
+
+def test_a_tracker_carries_its_fallback_reason_into_the_summary() -> None:
+    summaries: list[RunSummary] = []
+    tracker = make_tracker(
+        input_count=1,
+        provider_served=ProviderChoice.CPU,
+        on_finish=summaries.append,
+        fallback_reason="the execution provider is not registered",
+    )
+
+    with tracker:
+        tracker.advance()
+
+    assert summaries[0].fallback_reason == "the execution provider is not registered"
+
+
+def test_a_tracker_with_no_fallback_reason_reports_none() -> None:
+    summaries: list[RunSummary] = []
+    tracker = make_tracker(input_count=1, on_finish=summaries.append)
+
+    with tracker:
+        tracker.advance()
+
+    assert summaries[0].fallback_reason is None
+
+
+def test_a_blank_fallback_reason_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError, match="fallback_reason"):
+        make_tracker(provider_served=ProviderChoice.CPU, fallback_reason="   ")
+
+
+def test_a_fallback_reason_on_a_non_cpu_run_is_refused_at_construction() -> None:
+    """Rejected when the tracker is built, not when the summary is.
+
+    A `RunSummary` raising on this pair would raise inside ``__exit__`` - which
+    for an interrupted run is while the caller's real exception is already
+    propagating - and would replace that failure with a reporting one. The pair
+    is knowable before the run starts, so it is checked before the run starts.
+    """
+    with pytest.raises(ValueError, match="requirement 2.5"):
+        make_tracker(
+            provider_served=ProviderChoice.NPU,
+            fallback_reason="the NPU was not used",
+        )
+
+
+def test_an_interrupted_run_still_reports_its_fallback_reason() -> None:
+    """The failure that propagates is the caller's, and the reason survives."""
+    summaries: list[RunSummary] = []
+    tracker = make_tracker(
+        input_count=4,
+        provider_served=ProviderChoice.CPU,
+        on_finish=summaries.append,
+        fallback_reason="the execution provider is not registered",
+    )
+
+    with pytest.raises(RuntimeError, match="the backend died"):
+        with tracker:
+            tracker.advance()
+            raise RuntimeError("the backend died")
+
+    assert summaries[0].fallback_reason == "the execution provider is not registered"
+    assert summaries[0].completed_count == 1
+    assert summaries[0].interrupted
 
 
 def test_mapping_helpers_accept_any_mapping() -> None:
