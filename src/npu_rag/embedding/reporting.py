@@ -37,11 +37,17 @@ This module sits immediately right of ``types`` and ``errors`` in design.md's
 dependency direction - ``types, errors -> reporting -> profiles -> ...`` - so it
 reads those two and nothing else in this package.
 
-**Not here:** ``EmbedResult``. Requirement 3.9's ``truncated_indices``, the
-partition-verification verdict, and the ``auto`` fallback reason are claims only
-the service and the backends can make, and they land with the service (task
-5.3). ``RunSummary`` carries the run-level facts 8.6 and 2.6 name; 5.3 composes
-it with the vectors rather than duplicating it.
+**Not here:** ``EmbedResult``. Requirement 3.9's ``truncated_indices`` and the
+partition-verification verdict are claims only the service and the backends can
+make, and they land with the service (task 5.3). ``RunSummary`` carries the
+run-level facts 8.6 and 2.6 name; 5.3 composes it with the vectors rather than
+duplicating it.
+
+``RunSummary.fallback_reason`` was added by **task 4.1**, which owns
+requirements 2.4 and 2.5 and produces the string in
+``providers/base.resolve_backend``. Task 2.3 left it out deliberately - it had
+no producer then - and recorded the obligation in tasks.md's Implementation
+Notes so the carrier design.md's traceability table names could not go missing.
 """
 
 from __future__ import annotations
@@ -236,6 +242,14 @@ class RunSummary:
     ``completed_count`` and ``input_count`` are both carried because they answer
     two different requirements: 8.6 wants how many inputs the successful run
     processed, and 8.4 wants how many of them finished when it did not.
+
+    ``fallback_reason`` is requirement 2.5's carrier, added by task 4.1 which
+    owns that requirement (design.md's Requirements Traceability maps 2.4/2.5 to
+    this field). It follows ``interruption``'s single-nullable-reason shape:
+    ``None`` means nothing was substituted, and any other value is the specific
+    reason the NPU was not used. It is meaningful only under an ``auto``
+    selection - an explicit choice is either honoured or fails - and only ever
+    accompanies a CPU-served run, which is the invariant enforced below.
     """
 
     operation: str
@@ -246,6 +260,7 @@ class RunSummary:
     truncated_count: int
     elapsed_seconds: float
     interruption: str | None
+    fallback_reason: str | None = None
 
     def __post_init__(self) -> None:
         _checked_label(self.operation, "operation")
@@ -277,6 +292,14 @@ class RunSummary:
                 )
         else:
             _checked_label(self.interruption, "interruption")
+        if self.fallback_reason is not None:
+            _checked_label(self.fallback_reason, "fallback_reason")
+            if self.provider_served is not ProviderChoice.CPU:
+                raise ValueError(
+                    "fallback_reason explains why the NPU was not used, so the "
+                    f"CPU must be what served; got provider_served="
+                    f"{self.provider_served.value!r} (requirement 2.5)"
+                )
 
     @property
     def interrupted(self) -> bool:
@@ -294,6 +317,7 @@ class RunSummary:
             "truncated_count": int(self.truncated_count),
             "elapsed_seconds": float(self.elapsed_seconds),
             "interruption": self.interruption,
+            "fallback_reason": self.fallback_reason,
         }
 
     @classmethod
@@ -309,6 +333,7 @@ class RunSummary:
             "truncated_count",
             "elapsed_seconds",
             "interruption",
+            "fallback_reason",
         )
         return cls(
             operation=_str_from(mapping, "operation"),
@@ -319,6 +344,7 @@ class RunSummary:
             truncated_count=_int_from(mapping, "truncated_count"),
             elapsed_seconds=_float_from(mapping, "elapsed_seconds"),
             interruption=_optional_str_from(mapping, "interruption"),
+            fallback_reason=_optional_str_from(mapping, "fallback_reason"),
         )
 
 

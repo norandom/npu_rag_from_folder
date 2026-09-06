@@ -109,7 +109,7 @@
 
 - [ ] 4. Execution backends
 
-- [ ] 4.1 Define the backend protocol and provider resolution policy
+- [x] 4.1 Define the backend protocol and provider resolution policy
   - Specify a backend contract that returns token embeddings and the attention mask, and performs no pooling or normalization
   - Resolve an explicit NPU request to a failure when the NPU is unusable, never to a substitute
   - Prefer the NPU under automatic selection and return the reason whenever the CPU is used instead
@@ -334,3 +334,8 @@
 - 3.3: the vendor compiler writes `original-info-signature.txt` and `original-model-signature.txt` into the process CWD on every compile. Tasks 4.3/6.x should expect this litter from every benchmark cell and clean it up.
 - 3.3: two non-blocking test gaps on proven-LIVE defensive guards (not dead code - reachability probed): the `PreparedArtifact` path guard (artifacts.py:770-781) and `_optional_text`'s absence-vs-null branch (artifacts.py:379-380). Also `mapping.get("files", [])` is lenient where `_optional_text` is strict.
 - 3.3: measured compile cost - MiniLM at batch 1 x seq 128 takes ~160-310s cold and 0.40s warm, a ~400x ratio. EmbeddingGemma at 1.22 GB / seq 512 was deliberately not compiled. The live compile test is opt-in via NPU_RAG_LIVE_COMPILE=1.
+- 4.1: **TASK 5.3 MUST THREAD `fallback_reason` INTO THE TRACKER.** 4.1 added the field to `RunSummary` and produces the string in `resolve_backend`, but `RunTracker.__exit__` builds every summary with `fallback_reason=None` - the field was added under a "change nothing else in reporting.py" authorisation, so no tracker keyword was added. Requirement 2.5 therefore has a carrier with no producer path until 5.3 either threads the reason through `RunTracker` or constructs the `RunSummary` itself. This is the same carrier-without-producer situation Note 2.3 was written to prevent, one level on. Also per Note 2.3: construct ONE tracker per `embed()` call - it is single-use.
+- 4.1: design.md corrected in two places. The TransformerBackend prose said `run` returns "token embeddings plus the attention mask", contradicting its own Service Interface sketch AND its own Postconditions. The sketch wins: the service holds the mask it passed in, so returning a copy would create a second mask that could disagree after a padding change - exactly where masked mean pooling silently breaks - and the isolated adapter would have to serialize it back over the socket for nothing, widening the divergence surface 5.4 requires to be zero.
+- 4.1: `resolve_backend` takes a required keyword-only `factories` beyond design.md's three-arg sketch, now recorded in design.md. The port must not construct its own adapters (import cycle inside one layer, against the ports-and-adapters seam), and it is REQUIRED rather than defaulted because a default pair is exactly the silent substitution 2.2 forbids. It is also what lets both branches of requirement 2 be exercised on a machine whose NPU works.
+- 4.1: the package-wide layer guard deferred by Notes 1.1 and 1.4 is now DONE - it walks every module, resolves relative imports against each file's containing package, and has a non-vacuity check. Reviewer verified it by planting a real `models` -> `service` inversion, which was caught.
+- 4.1: design.md's Requirements Traceability maps 2.7 to `service.py`, but `BoundBackend` correctly lives in `providers/base.py` per the task text and the section's own Invariants line. Touch up the traceability row when design.md is next edited; not a defect.

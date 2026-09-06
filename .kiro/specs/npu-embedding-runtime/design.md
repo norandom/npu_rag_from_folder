@@ -367,7 +367,7 @@ def check_capability() -> CapabilityReport: ...
 | Requirements | 2.1, 2.2, 2.3, 2.4, 2.5, 2.7, 5.1, 5.2, 5.5 |
 
 **Responsibilities & Constraints**
-- Returns **token** embeddings plus the attention mask. It never pools, never normalizes — that belongs to the service so it cannot differ per backend.
+- Returns **token** embeddings alone, for use with the attention mask its caller already supplied. It never pools, never normalizes — that belongs to the service so it cannot differ per backend. **Corrected 2026-09-06 after task 4.1**: this bullet previously read "token embeddings plus the attention mask", contradicting both the Service Interface sketch below (`-> npt.NDArray[np.float32]`) and this section's own Postconditions (`returns (batch, compiled_seq_len, hidden)`). The sketch is right, on three grounds: two of the three normative statements already agreed with it; the service holds the mask it passed in, so returning a copy would create a second mask that could disagree with the first after a padding change — precisely where masked mean pooling silently breaks; and the isolated adapter would otherwise have to serialize the mask back across the socket, widening the divergence surface 5.4 requires to be zero. The bullet was describing the *pair available for pooling*, not the return type.
 - **Provider identity must be guarded twice, because session creation is not a signal.** Measured on this machine: constructing a session with `providers=["VitisAIExecutionProvider"]` when the EP is absent **succeeds**, emits only a `UserWarning`, and runs the graph on the CPU. Supplying `provider_options` does not change this. A `try`/`except` around session construction detects nothing. The two guards are therefore mandatory:
   1. **Pre-check** `get_available_providers()` contains the requested provider before constructing anything.
   2. **Post-check** `session.get_providers()[0]` equals the requested provider after construction.
@@ -408,9 +408,12 @@ def resolve_backend(
     choice: ProviderChoice,
     profile: ModelProfile,
     capability: CapabilityReport,
+    *,
+    factories: BackendFactories,
 ) -> tuple[TransformerBackend, str | None]: ...
 ```
 
+- **`factories` is keyword-only and required** (added 2026-09-06, task 4.1). The port must not construct its own adapters: importing `CpuBackend`/`VitisAIBackend` inside `base.py` would import modules that import it back, a cycle inside one layer and against this design's own ports-and-adapters seam. It is required rather than defaulted because a default pair is exactly the silent substitution requirement 2.2 forbids. It is also what lets both branches of requirement 2 be exercised on a machine whose NPU works.
 - Preconditions: `token_ids` and `attention_mask` are shaped `(batch, compiled_seq_len)`; partial batches are padded by the caller.
 - Postconditions: returns `(batch, compiled_seq_len, hidden)`; `resolve_backend` returns the fallback reason as the second element, non-`None` only under `auto` (2.5).
 - Invariants: `resolve_backend` raises rather than substituting when `choice` is `NPU` and the NPU is unusable (2.2); a resolved backend is bound for the whole operation (2.7).
@@ -679,3 +682,4 @@ Progress is a callback, not logging, so callers choose presentation (5.6, 8.3). 
 - **CPU energy is unmeasurable with the available tooling**, making the headline energy comparison one-sided. Throughput and wall-clock carry the comparison; the gap is stated, not estimated.
 - **`compiled_seq_len` of 512 is an assumption.** If padding overhead dominates for short chunks, a 256 profile may be warranted — a benchmark output, not a design commitment.
 - **The isolated worker's deployment is deliberately unspecified, pending the spike — and after the 2026-09-04 probe it is probably moot.** The provider registers and is selected in a pure uv venv, so the in-process path works; the worker would only return if the BF16 flow (`vaiml.dll`) turns out to demand a different environment. If it is ever built, it runs under a **second uv-managed venv** — never conda, which is not installed on this machine and is excluded by user directive. Specifying it now would detail a path the spike may prove unnecessary. If the capability check reports `ISOLATED`, this must be resolved before the isolated backend is built, and the resolution must include a **version handshake in the first frame** so a mismatched worker fails loudly rather than returning subtly wrong vectors. Raised as Critical Issue 2 in design validation and accepted as deferred.
+

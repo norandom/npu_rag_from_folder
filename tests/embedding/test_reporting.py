@@ -188,6 +188,7 @@ GOOD_SUMMARY: dict[str, object] = {
     "truncated_count": 1,
     "elapsed_seconds": 0.5,
     "interruption": "KeyboardInterrupt",
+    "fallback_reason": None,
 }
 
 
@@ -248,6 +249,8 @@ def test_summary_from_mapping_names_every_missing_key(missing: str) -> None:
         ("elapsed_seconds", True),
         ("interruption", 7),
         ("interruption", 1.5),
+        ("fallback_reason", 7),
+        ("fallback_reason", 1.5),
     ],
 )
 def test_summary_from_mapping_rejects_a_wrongly_typed_field(
@@ -307,6 +310,120 @@ def test_summary_mapping_holds_only_json_scalars() -> None:
     }
     assert offenders == {}
     assert RunSummary.from_mapping(json.loads(json.dumps(mapping))) == summary
+
+
+# --------------------------------------------------------------------------
+# fallback_reason: why the NPU was not used (2.5)
+#
+# Added by task 4.1, which owns requirements 2.4 and 2.5. design.md's
+# Requirements Traceability maps them to ``RunSummary.fallback_reason``, and
+# `resolve_backend` produces the string this field carries to the caller.
+# --------------------------------------------------------------------------
+
+
+def test_a_run_that_did_not_fall_back_carries_no_reason() -> None:
+    """The default, and the common case: nothing was substituted."""
+    summary = RunSummary(
+        operation="embed_documents",
+        provider_served=ProviderChoice.NPU,
+        execution_mode=ExecutionMode.IN_PROCESS,
+        input_count=2,
+        completed_count=2,
+        truncated_count=0,
+        elapsed_seconds=0.25,
+        interruption=None,
+    )
+
+    assert summary.fallback_reason is None
+
+
+def test_a_fallback_run_reports_why_the_npu_was_not_used() -> None:
+    summary = RunSummary(
+        operation="embed_documents",
+        provider_served=ProviderChoice.CPU,
+        execution_mode=ExecutionMode.IN_PROCESS,
+        input_count=2,
+        completed_count=2,
+        truncated_count=0,
+        elapsed_seconds=0.25,
+        interruption=None,
+        fallback_reason="execution_provider_registered: not registered here",
+    )
+
+    assert summary.fallback_reason == (
+        "execution_provider_registered: not registered here"
+    )
+
+
+def test_a_fallback_reason_on_an_npu_run_is_a_contradiction() -> None:
+    """Falling back means the CPU served instead (2.5). A summary claiming the
+    NPU served *and* explaining why it did not would report both answers."""
+    with pytest.raises(ValueError, match="fallback_reason"):
+        RunSummary(
+            operation="embed_documents",
+            provider_served=ProviderChoice.NPU,
+            execution_mode=ExecutionMode.IN_PROCESS,
+            input_count=2,
+            completed_count=2,
+            truncated_count=0,
+            elapsed_seconds=0.25,
+            interruption=None,
+            fallback_reason="the NPU was not used",
+        )
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_a_blank_fallback_reason_is_rejected(blank: str) -> None:
+    with pytest.raises(ValueError, match="fallback_reason"):
+        RunSummary(
+            operation="embed_documents",
+            provider_served=ProviderChoice.CPU,
+            execution_mode=ExecutionMode.IN_PROCESS,
+            input_count=2,
+            completed_count=2,
+            truncated_count=0,
+            elapsed_seconds=0.25,
+            interruption=None,
+            fallback_reason=blank,
+        )
+
+
+def test_the_fallback_reason_survives_the_json_round_trip() -> None:
+    """5.6's process boundary: the reason must reach an isolated caller too."""
+    summary = RunSummary(
+        operation="embed_documents",
+        provider_served=ProviderChoice.CPU,
+        execution_mode=ExecutionMode.ISOLATED,
+        input_count=1,
+        completed_count=1,
+        truncated_count=0,
+        elapsed_seconds=0.5,
+        interruption=None,
+        fallback_reason="npu_device_present: absent",
+    )
+
+    mapping = summary.as_mapping()
+
+    assert mapping["fallback_reason"] == "npu_device_present: absent"
+    offenders = {
+        key: type(value)
+        for key, value in mapping.items()
+        if type(value) not in JSON_SCALARS
+    }
+    assert offenders == {}
+    assert RunSummary.from_mapping(json.loads(json.dumps(mapping))) == summary
+
+
+def test_from_mapping_accepts_a_stated_fallback_reason() -> None:
+    revived = RunSummary.from_mapping(
+        {
+            **GOOD_SUMMARY,
+            "provider_served": "cpu",
+            "fallback_reason": "vendor_runtime_installed: absent",
+        }
+    )
+
+    assert revived.fallback_reason == "vendor_runtime_installed: absent"
 
 
 # --------------------------------------------------------------------------
