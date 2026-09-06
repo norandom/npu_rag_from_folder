@@ -107,7 +107,7 @@
   - _Requirements: 4.3, 4.4, 4.6, 4.7, 8.5_
   - _Boundary: ArtifactStore_
 
-- [ ] 4. Execution backends
+- [x] 4. Execution backends
 
 - [x] 4.1 Define the backend protocol and provider resolution policy
   - Specify a backend contract that returns token embeddings and the attention mask, and performs no pooling or normalization
@@ -136,7 +136,7 @@
   - _Boundary: VitisAIBackend_
   - _Depends: 3.3, 4.1_
 
-- [ ] 4.4 Implement the isolated backend and its worker
+- [x] 4.4 Implement the isolated backend and its worker - **NOT APPLICABLE, closed 2026-09-06 without implementation**
   - **Conditional on task 1.3.** If the spike concluded in-process execution works, record this task as not applicable and skip it rather than building an unused path
   - Exchange length-prefixed frames carrying a descriptive header and a raw numeric payload over a loopback socket, avoiding any serialization that assumes matching interpreter versions
   - Exchange a version handshake in the first frame so a mismatched worker fails loudly rather than returning subtly wrong vectors
@@ -356,3 +356,7 @@
 - 4.3: confirmed on hardware - the sidecar resolves relative to the model file (a foreign CWD works), and a copied `context.onnx` WITHOUT its sidecar fails with a catchable ORT `NotImplemented`, so `ExecutionError(stage="session")` is the right path for that case.
 - 4.3: EmbeddingGemma's `model.onnx` stores weights INLINE (Note 3.2), so `onnx.load(..., load_external_data=False)` does nothing for it - counting nodes parses the full 1.22 GB. Count more cheaply if backend construction cost matters.
 - 4.3: two non-blocking coverage gaps left open (shipped behaviour correct in both): a snapshot with one EPContext node and ZERO residue is unpinned (`residue == 0 -> None` survives; code correctly returns 1.0), and the guards-before-verification ordering design.md line 374 mandates is unpinned (swapping `_open`/`_verify` survives; a regression would surface an unregistered provider as PartitionShareTooLow instead of EnvironmentError_, blunting 8.2). Pick up if providers/ is hardened later.
+- 4.4: CLOSED AS NOT APPLICABLE, no code written. The task's own first bullet made it conditional: "If the spike concluded in-process execution works, record this task as not applicable and skip it rather than building an unused path." Task 1.3's verdict was IN_PROCESS, and that has since been confirmed twice more on hardware - task 4.3's live suite constructs a real Vitis AI session in-process and runs it at ~81 inputs/s with a live xrt-smi hardware context. There is no isolation requirement left to serve.
+- 4.4: requirement 5.1 is a "Where..." conditional ("Where NPU execution is not reachable from the application's own managed environment..."), so it is satisfied vacuously - its precondition is false on this machine. Requirements 5.2-5.6 hang off the same conditional. Nothing in 2.x, 3.x, 4.1-4.3 or 5.x-8.x depends on an isolated backend existing.
+- 4.4: if it is ever revived, two hard-won facts must carry over. (1) An EP option mismatch calls abort(), so a worker would DIE rather than error - the protocol must treat a vanished worker as a possible abort, not only a crash, and the parent cannot rely on catching anything. (2) The wire protocol was designed in design.md as length-prefixed frames with a JSON header and a raw float32 payload, deliberately avoiding pickle because the worker would run under a different interpreter; a version handshake in the first frame was made a precondition by design validation.
+- 4.4: `EmbedResult.execution_mode` and `ExecutionMode.ISOLATED` remain in the type system and are correct to keep - `resolve_backend` already treats ISOLATED as NPU-available, so the vocabulary is ready if the situation ever changes. No dead code ships as a result of this closure.
