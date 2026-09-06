@@ -81,7 +81,7 @@
   - _Boundary: reporting_
   - _Depends: 2.1_
 
-- [ ] 3. Model preparation
+- [x] 3. Model preparation
 
 - [x] 3.1 Implement model acquisition with license-gate handling
   - Download model weights and record the resolved revision so a silently changed upstream artifact is detectable
@@ -98,7 +98,7 @@
   - _Requirements: 4.6_
   - _Boundary: ArtifactStore_
 
-- [ ] 3.3 Build the artifact store with manifest-based invalidation
+- [x] 3.3 Build the artifact store with manifest-based invalidation
   - Compile the exported graph for the NPU and persist the resulting context snapshot
   - Write a manifest recording model identity and revision, compiled sequence length, batch size, provider, and toolchain versions
   - Decide reuse by comparing the manifest against the current profile and toolchain, and report when artifacts were reused
@@ -326,3 +326,11 @@
 - 3.2: `model.onnx` for EmbeddingGemma is a SINGLE 1.22 GB protobuf with external_data=False, against ONNX's 2 GB ceiling. Fits for all three candidates but is tight; tasks 3.3/4.x should know. Measured: acquisition 126s cold, export 63s, dense.npz 19 MB.
 - 3.2: `DENSE_ORDER_KEY` in dense.npz is the PIPELINE order task 5.2 must iterate to apply the projections. A sorted order applies 768->3072->768 in the wrong sequence: right shape, right norm, WRONG MEANING. Task 5.2 must consume `order` and never re-derive it by sorting the weight names.
 - 3.2: three non-blocking test gaps left open on defensive branches (reviewer's N6/N10/N12): the int64 input-dtype check (export.py:611), the real reader's `activation` fidelity (export.py:538-541 - all three candidates use Identity today), and the symbolic hidden-width check (export.py:668). No fixture reaches any of them. Pick up when task 5.2 starts consuming `activation`, or if models/ is hardened later.
+- 3.3: **BINDING ON TASK 4.3** - the compiler's diagnostics do NOT survive the EP-context flow. `preliminary-vaiml-pass-summary.txt` exists during compilation and is GONE by the time the session returns, so `observed_partition_share` is null in every published manifest. design.md's "unverifiable partitioning fails under explicit npu" policy would therefore fire on EVERY run. design.md is amended: derive the offload verdict from the published `context.onnx`'s own node mix (a live MiniLM artifact reads {EPContext:1, Cast:1, Gather:1, GatherND:1}). Confirmed twice on real hardware, by implementer and reviewer independently.
+- 3.3: the EP context snapshot is TWO files - `context.onnx` plus a `context.onnx_VITISAI.bin` sidecar, referenced by BARE filename. That is what makes the atomic directory rename safe; an absolute path would have silently broken every published artifact. design.md's Physical Data Model corrected from four files to five.
+- 3.3: NEVER read the ONNX Runtime version from `importlib.metadata` - the stale stock dist-info residue (Note 1.2) reports 1.29.0 while the loaded runtime is 1.23.2.dev20260117. Use `onnxruntime.__version__`. An AST test pins this. A wrong version in the fingerprint would silently defeat 4.7.
+- 3.3: `observed_partition_share` is recorded but deliberately EXCLUDED from the reuse comparison - there is no "current" share to compare against without performing the very compile reuse exists to avoid, so the comparison is undefined rather than merely undesirable. Every other manifest field forces a rebuild. Reviewer confirmed this is correct scoping, not a narrowing of the Observable.
+- 3.3: `PUBLICATION_STAGE` is a fifth preparation stage beyond errors.py's documented four. `stage` is a free-form str and 4.6 does not enumerate stages, so a rename failure genuinely needs its own.
+- 3.3: the vendor compiler writes `original-info-signature.txt` and `original-model-signature.txt` into the process CWD on every compile. Tasks 4.3/6.x should expect this litter from every benchmark cell and clean it up.
+- 3.3: two non-blocking test gaps on proven-LIVE defensive guards (not dead code - reachability probed): the `PreparedArtifact` path guard (artifacts.py:770-781) and `_optional_text`'s absence-vs-null branch (artifacts.py:379-380). Also `mapping.get("files", [])` is lenient where `_optional_text` is strict.
+- 3.3: measured compile cost - MiniLM at batch 1 x seq 128 takes ~160-310s cold and 0.40s warm, a ~400x ratio. EmbeddingGemma at 1.22 GB / seq 512 was deliberately not compiled. The live compile test is opt-in via NPU_RAG_LIVE_COMPILE=1.

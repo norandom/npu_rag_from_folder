@@ -428,6 +428,11 @@ def resolve_backend(
 - Risks: partition-share diagnostics are not a stable contract, so the design must tolerate their absence — but **the tolerance policy depends on the provider choice, not on the diagnostics alone**:
   - Under explicit `NPU`, unverifiable partitioning is a **failure** (`PartitionShareTooLow` with an "unverifiable" cause). The caller demanded the NPU; proceeding without evidence would reintroduce precisely the silent degradation Requirement 2 exists to prevent (2.2).
   - Under `AUTO`, unverifiable partitioning is a recorded warning and execution proceeds, since the caller has already accepted provider substitution.
+
+- **AMENDED 2026-09-06 after task 3.3 — the primary signal above is unavailable on the artifact path, and this amendment is binding on task 4.3.** Measured twice on real hardware, by the implementer and independently by the reviewer during its own live compile: under the EP-context flow the compiler's cache directory is **empty by the time the session returns**. `preliminary-vaiml-pass-summary.txt` exists *during* compilation and is gone afterwards, so `observed_partition_share` is `null` in every published manifest. Applied literally, the policy above would raise `PartitionShareTooLow` on **every** NPU run and make the provider unusable under its own rules.
+  - **Replacement signal**: the published `context.onnx` carries the ops the compiler did *not* offload as ordinary nodes beside its single `EPContext` node. A live MiniLM artifact reads `{EPContext: 1, Cast: 1, Gather: 1, GatherND: 1}`. Task 4.3 must derive the offload verdict from that node mix — the compiled graph is durable evidence, unlike the transient diagnostics.
+  - The `preliminary-vaiml-pass-summary.txt` parser is retained and unit-tested for the non-EP-context path, where it remains authoritative. The console offload percentage and `fail_safe_summary.json` remain untrustworthy on **all** paths.
+  - Unchanged: session creation still proves nothing, and both guards (`get_available_providers()` before, `session.get_providers()[0]` after) remain mandatory. This amendment changes only the third, finer check.
   - Either way `EmbedResult.partition_verified` reports whether verification actually happened, so a caller or the benchmark can distinguish "verified on NPU" from "assumed on NPU" (2.6).
 
 ### Service
@@ -583,13 +588,18 @@ Artifacts live on the filesystem, not in a database:
 
 ```
 artifacts/<model-id>/<provider>/<compiled-seq-len>/
-├── model.onnx              # exported trunk
-├── context.onnx            # EP context snapshot, NPU only
-├── dense.npz               # Dense stage weights, when has_dense_stage
-└── manifest.json           # identity and invalidation key
+├── model.onnx                # exported trunk
+├── context.onnx              # EP context snapshot, NPU only
+├── context.onnx_VITISAI.bin  # EP context sidecar, NPU only - see below
+├── dense.npz                 # Dense stage weights, when has_dense_stage
+└── manifest.json             # identity and invalidation key
 ```
 
+**Corrected 2026-09-06 after task 3.3**: the snapshot is **two** files, not one. With `ep.context_embed_mode=0` the provider writes `context.onnx` (~46.9 MB for MiniLM) plus a `context.onnx_VITISAI.bin` sidecar (~15.4 MB). Verified independently by reading the published artifact: the `EPContext` node references the sidecar by **bare filename** (`ep_cache_context = 'context.onnx_VITISAI.bin'`), not an absolute path — which is precisely what makes the atomic directory rename safe. Had it embedded a path, publication would have silently broken every artifact. A profile without a dense stage therefore has four files; one with a dense stage has five.
+
 `manifest.json` records model id and revision, compiled sequence length, batch size, provider, Ryzen AI runtime version, driver version, ONNX Runtime version, and the observed NPU partition share. Comparison against the current profile and toolchain decides reuse versus rebuild (4.4, 4.7). Writes go to a sibling temporary directory and are renamed on success, so an interrupted preparation leaves nothing a later run would trust (8.5).
+
+Two provenance notes from task 3.3. The **ONNX Runtime version must be read from `onnxruntime.__version__`, never from `importlib.metadata`** — on a provisioned machine the stale stock `dist-info` residue (Implementation Note 1.2) makes `metadata.version("onnxruntime")` report `1.29.0` while the loaded runtime is `1.23.2.dev20260117`, and a fingerprint recording the wrong version would silently defeat 4.7. And `observed_partition_share` is recorded but deliberately **excluded from the reuse comparison**: it describes a compilation that already happened rather than what the artifact was built for, and there is no "current" value to compare against without performing the very compile reuse exists to avoid. Every other manifest field does force a rebuild.
 
 ## Error Handling
 
