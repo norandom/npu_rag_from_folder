@@ -859,7 +859,10 @@ LAYER_ORDER: tuple[tuple[str, ...], ...] = (
     ("profiles",),
     ("environment",),
     ("models",),
-    ("providers",),
+    # `tokenize` shares a rank with `providers`: both sit above `models` and
+    # below `service`, and neither may import the other. Added 2026-09-06 when
+    # task 5.1's review found `tokenize.py` was invisible to this guard.
+    ("providers", "tokenize"),
     ("service",),
     ("bench",),
 )
@@ -890,10 +893,20 @@ def test_every_module_in_the_package_respects_the_layer_order() -> None:
     that ``models`` never reaches into ``providers``, which design.md calls out
     by name as an error rather than a style issue."""
     violations: list[str] = []
+    unplaced: list[str] = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         relative = path.relative_to(PACKAGE_ROOT)
         own = relative.parts[0] if len(relative.parts) > 1 else relative.stem
+        if own == "__init__":
+            continue
         if own not in LAYER_OF:
+            # Do NOT skip. Until 2026-09-06 this was a silent `continue`, which
+            # made a module absent from LAYER_ORDER invisible to this guard both
+            # as importer and as target - so "package-wide" was a misnomer and
+            # every new module was unpoliced until someone remembered the table.
+            # Task 5.1's `tokenize.py` was the first to fall through it. Failing
+            # loudly forces a deliberate placement decision for each new module.
+            unplaced.append(str(relative))
             continue
         # Relative imports resolve against the *containing* package, which for
         # `providers/base.py` is `npu_rag.embedding.providers`, not the package
@@ -906,6 +919,11 @@ def test_every_module_in_the_package_respects_the_layer_order() -> None:
             rank = LAYER_OF.get(target)
             if rank is not None and rank > LAYER_OF[own]:
                 violations.append(f"{relative}: imports {name}")
+    assert unplaced == [], (
+        f"these modules have no entry in LAYER_ORDER and are therefore invisible "
+        f"to this guard, as importer and as target: {unplaced}. Add each at its "
+        f"correct rank in the dependency direction rather than deleting this check."
+    )
     assert violations == []
 
 
