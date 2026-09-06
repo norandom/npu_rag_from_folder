@@ -126,7 +126,7 @@
   - _Boundary: CpuBackend_
   - _Depends: 3.3, 4.1_
 
-- [ ] 4.3 (P) Implement the NPU backend with partition verification
+- [x] 4.3 (P) Implement the NPU backend with partition verification
   - Construct the session against the vendor provider with reduced-precision targeting supplied through the provider configuration
   - Measure how much of the graph was assigned to the NPU after preparation, and treat a below-threshold assignment as a failure under explicit NPU selection
   - Treat unverifiable partitioning as a failure under explicit NPU selection and a recorded warning under automatic selection
@@ -346,3 +346,13 @@
 - 4.2: no CPU `BackendFactory` ships. `BackendFactory` is `(profile, capability) -> TransformerBackend` with nowhere to get an artifact root, so TASK 5.3 must wire `ensure_prepared(profile, ProviderChoice.CPU, root) -> CpuBackend(artifact, profile)`.
 - 4.2: the CPU `Session`/`SessionFactory` seam deliberately CANNOT express `SessionOptions` or `provider_options` - that is what makes "reduces precision nowhere" structural rather than promised. Task 4.3 needs both (the `config_file` option is what engages BF16), so vitisai.py must define its OWN factory rather than widening this one.
 
+
+- 4.3: **LOAD-TIME PROVIDER OPTIONS MUST BE `config_file` ONLY.** Passing `cache_dir`/`cache_key` when LOADING an EP-context snapshot makes the Vitis AI EP call `abort()` - the interpreter dies, uncatchable by any try/except - because the key differs from the one baked in at compile time. Cache options are correct at COMPILE time (3.3) and forbidden at LOAD time. Found only by the reviewer's live run; the implementer had skipped the live suite. A unit test must pin the load-time factory receives no cache options, since CI has no NPU.
+- 4.3: **FOR 4.4** - the EP's failure mode on option mismatch is a hard `abort()`, uncatchable in-process. An isolated worker hitting it would DIE, not error. Any worker protocol must treat a vanished worker as a possible EP abort, not only a crash.
+- 4.3: **TASK 5.3 MUST CLOSE THE NPU FACTORY OVER THE CALLER'S SELECTION.** `VitisAIBackend` takes `requested: ProviderChoice` (npu or auto; cpu rejected) because design.md places the fail-vs-warn policy in the adapter. But `BackendFactory` is `(profile, capability)` and `resolve_backend` calls `factories.npu` identically for npu and auto, so 5.3 must build it as e.g. `lambda p, c: VitisAIBackend(artifact, p, choice, ...)`. If it ever defaults, default to NPU (fail-closed). Cleaner alternative if base.py is reopened: apply the threshold policy in `_bind`, which already knows `requested`.
+- 4.3: `partition_verified` is derived SERVICE-SIDE: `None` for CPU, else `share is not None and share >= MINIMUM_PARTITION_SHARE`. 5.3 imports the threshold from `providers.vitisai` (downward, permitted). Reviewer ruled this correct given BoundBackend's four-member delegation.
+- 4.3: measured `npu_partition_share` for MiniLM is **0.988** (trunk 251 nodes, residue {Cast:1, Gather:1, GatherND:1}). The "~0.97" quoted in code was an unmeasured estimate written before any live run - corrected.
+- 4.3: **FOR 6.x** - the node mix has a BLIND SPOT: it cannot see CPU fallback INSIDE the EPContext blob (the vendor fail-safe partitioning). The throughput A/B against a CPU-only session on the identical graph is the mandatory independent backstop; ratio ~1.0 means the NPU is idle regardless of the node mix.
+- 4.3: confirmed on hardware - the sidecar resolves relative to the model file (a foreign CWD works), and a copied `context.onnx` WITHOUT its sidecar fails with a catchable ORT `NotImplemented`, so `ExecutionError(stage="session")` is the right path for that case.
+- 4.3: EmbeddingGemma's `model.onnx` stores weights INLINE (Note 3.2), so `onnx.load(..., load_external_data=False)` does nothing for it - counting nodes parses the full 1.22 GB. Count more cheaply if backend construction cost matters.
+- 4.3: two non-blocking coverage gaps left open (shipped behaviour correct in both): a snapshot with one EPContext node and ZERO residue is unpinned (`residue == 0 -> None` survives; code correctly returns 1.0), and the guards-before-verification ordering design.md line 374 mandates is unpinned (swapping `_open`/`_verify` survives; a regression would surface an unregistered provider as PartitionShareTooLow instead of EnvironmentError_, blunting 8.2). Pick up if providers/ is hardened later.
