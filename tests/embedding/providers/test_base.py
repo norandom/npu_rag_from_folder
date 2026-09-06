@@ -855,6 +855,15 @@ def test_the_policy_module_does_not_redefine_the_shared_vocabulary() -> None:
 #: one layer may import only from strictly lower ones.
 LAYER_ORDER: tuple[tuple[str, ...], ...] = (
     ("types", "errors"),
+    # `postprocess` gets its own rank directly above `types`/`errors` rather
+    # than sharing theirs. Added 2026-09-06 by task 5.2. It is a pure function
+    # of arrays - masked mean pooling, the Dense stages, L2 normalization - and
+    # needs the error taxonomy and the provider vocabulary for its own failure
+    # reports and nothing else; the caller loads the dense weights and hands the
+    # arrays in, which is what keeps `models` and `profiles` out of it. Placing
+    # it at its own rank rather than at rank 0 forbids strictly more: it may not
+    # reach `reporting`, and nothing in `types`/`errors` may reach it.
+    ("postprocess",),
     ("reporting",),
     ("profiles",),
     ("environment",),

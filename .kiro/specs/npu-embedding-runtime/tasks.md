@@ -157,7 +157,7 @@
   - _Boundary: tokenize_
   - _Depends: 2.2_
 
-- [ ] 5.2 (P) Implement post-processing shared by all backends
+- [x] 5.2 (P) Implement post-processing shared by all backends
   - Apply mean pooling that respects the attention mask, so padding contributes nothing under fixed-length inputs
   - Apply the dense stage where the profile declares one, then normalize to unit length
   - Keep this path independent of which backend produced the token embeddings
@@ -368,4 +368,25 @@
 - 5.1: `count_tokens` accepts `str | DocumentText`, wider than design.md's `text: str` sketch. Necessary and upheld on review - a title demonstrably changes the count, and a str-only signature could not measure a titled document exactly, breaking 3.8 for precisely the titled inputs document-ingest produces.
 - 5.1: NEVER assert that a document count and a query count for the same text differ. Nomic's `search_document: ` and `search_query: ` both tokenize to exactly 4 tokens, so they legitimately coincide; `!=` is also insufficient since swapped templates would pass it. Compare each count to its own independent reference and assert the rendered strings differ.
 - 5.1: for 5.3 - `EncodedBatch.token_counts` carries untruncated lengths and `truncated_indices` is `EmbedResult.truncated_indices`' source; `tokenizer_id` is `ModelTokenizer.tokenizer_id` (`model_id@40-hex-commit`), do not recompute it. The batch is `(n, 512)`; slicing into `profile.batch_size` groups is 5.3's job.
+
+
+## Standing lesson: vacuous fixtures are this project's recurring defect
+
+Four tasks have now shipped a test whose fixture data made an assertion trivially true. The production code was correct every time; the tests could not have caught it going wrong. Review found all four by mutation, never by reading.
+
+| Task | Fixture | What it could not see |
+| --- | --- | --- |
+| 2.2 | near-miss (caught pre-merge) | - |
+| 3.2 | dense stage names all alphabetical | `sorted()` == pipeline order, so a reversed 768->3072->768 chain passed |
+| 4.2 | attention mask all ones | a fabricated `ones_like(mask)` passed all 38 unit tests |
+| 5.2 | both dense weights symmetric AND bias aligned with its weight | bias-before-projection numerically identical; weight orientation pinned by nothing |
+
+**The 5.2 case is the instructive one**: that file's own docstring cites 3.2's lesson, and its `2_Dense`/`10_Dense` ordering fixture was deliberately built to be discriminating - and the same fixture was still degenerate along two *other* axes. Fixing one vacuity does not make a fixture non-vacuous.
+
+**Rules for every remaining task:**
+1. Non-vacuity is **per property, not per fixture**. Ask separately of each assertion: what wrong implementation would this data fail to distinguish?
+2. Prefer fixture values that are **generic** for the property under test - a non-symmetric matrix where orientation matters, a bias not aligned with its weight, a partial mask, non-alphabetical names.
+3. Add an explicit **non-vacuity test** asserting the fixture can tell right from wrong (task 4.2's `test_the_fixtures_can_tell_a_real_batch_from_a_fabricated_one` is the model). It fails loudly if someone later "simplifies" the fixture and silently disarms the assertion it protects.
+4. Hand-computed references must be **literals**, never produced by the module under test - task 5.2's reviewer re-derived them by hand to confirm.
+5. CI has no NPU, so a gap covered only by a live test is not covered at all.
 
