@@ -73,10 +73,11 @@ Models are handled behind one interface so that benchmarking three candidates is
 
 An explicit, written artifact — not just numbers in a terminal. It must record:
 
-- **Primary candidate**: `embeddinggemma-300m` (project owner's stated preference). **Comparators**: `nomic-embed-text-v1.5`, then `gte-modernbert-base`. *(Amended 2026-09-06: `bge-large-en-v1.5` replaced - see requirement 4.1 for the dense-architecture and size constraints that shaped the choice.)*
+- **Primary candidate**: `embeddinggemma-300m` (project owner's stated preference). **Comparators**: `nomic-embed-text-v1.5`, then `gte-modernbert-base`. *(Amended 2026-09-06: `bge-large-en-v1.5` replaced - see requirement 4.1. The dense-architecture constraint is real and load-bearing; the size point is about compile time, not an ONNX or hardware ceiling.)*
 - **Per model × per provider (NPU, CPU)**: chunks/sec throughput; wall-clock for a fixed representative batch; single-query embed latency (p50/p95); average and peak power draw plus energy per 1k chunks; peak RSS; model compile time and cache size on first vs. subsequent runs.
 - **Quality**: retrieval quality on a small hand-built query set drawn from the actual archive, so the energy/quality trade-off is visible rather than assumed.
 - **Fidelity**: BF16-vs-FP32 embedding divergence (cosine similarity against a CPU FP32 reference) to confirm quantization has not degraded the vectors.
 - **Methodology**: how measured, how power was sampled, how many runs, variance. Documented well enough to re-run and to trust.
 - **Verdict**: a recommended default model with stated reasoning, and the conditions under which a different choice would be better.
+
 
