@@ -390,3 +390,16 @@ Four tasks have now shipped a test whose fixture data made an assertion triviall
 4. Hand-computed references must be **literals**, never produced by the module under test - task 5.2's reviewer re-derived them by hand to confirm.
 5. CI has no NPU, so a gap covered only by a live test is not covered at all.
 
+
+## Model lineup amended 2026-09-06 - obligations for task 6.1
+
+Requirement 4.1's third candidate changed from `bge-large-en-v1.5` to `gte-modernbert-base`. Spec documents are amended; **the code is not**. `profiles.py` still declares bge-large and a test pins the set to exactly the three it knows, so 6.1 must land all of the following together:
+
+1. **Widen `ModelProfile.pooling`** from `Literal["mean"]` to include `"cls"`, and add a CLS branch to `postprocess.py` - `tokens[:, 0, :]`, taking the first position. Verified from the model's own `1_Pooling/config.json`: `pooling_mode_cls_token = True`. The CLS path does NOT consult the attention mask, so it cannot reintroduce the mask-blind pooling hazard; but it must still be pinned by a test with a fixture where CLS and mean differ, or the branch is vacuous (see the standing lesson above).
+2. **Replace the bge-large profile** with gte-modernbert-base: 149M params, ~600 MB exported, 768-dim, 8192 architectural context compiled at 512, Apache-2.0, **not gated**, **no Dense stage**, **symmetric** - document and query templates are both identity passthrough. That identity case is worth a test of its own: it exercises the template machinery's no-op path, which nothing currently does.
+3. **Export and NPU-compile it once** to confirm the path works end to end, as 3.2/3.3 did for MiniLM. At ~600 MB it should compile faster than anything else in the set.
+4. Update the profile-count test and any bge-large reference in tests.
+
+Two constraints that shaped this and must not be relitigated silently:
+- **Dense architectures only.** `nomic-embed-text-v2-moe` beats v1.5 on BEIR and MIRACL but routes 8 experts top-2 per token; conditional computation does not export cleanly to ONNX and will not compile to a static-shape NPU graph. Nomic stays at **v1.5**.
+- **The 2 GB ONNX protobuf ceiling.** EmbeddingGemma is already a single 1.22 GB protobuf (Note 3.2). Any future candidate materially larger needs external-data export, a code path this project has not built or verified against the NPU compiler.

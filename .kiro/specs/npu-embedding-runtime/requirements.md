@@ -43,7 +43,7 @@ Models sit behind one interface so that benchmarking three candidates is a matte
 - NPU execution requires **static tensor shapes**: sequence length fixed at preparation time, batch size 1 by default.
 - Strix (STX) supports NLP BF16, so BERT-style encoders are NPU-eligible. INT8-only targets (Phoenix, Hawk Point) are not a target.
 - Provider selection is `npu`, `cpu`, or `auto`, with no implicit silent fallback; the active provider is always reported.
-- Model licensing differs: `embeddinggemma-300m` is under Google's Gemma Terms of Use (gated, acceptable-use restrictions); `bge-large-en-v1.5` is MIT; `nomic-embed-text-v1.5` is Apache 2.0. Acceptable for personal use; constrains redistribution of a bundled model.
+- Model licensing differs: `embeddinggemma-300m` is under Google's Gemma Terms of Use (gated, acceptable-use restrictions); `nomic-embed-text-v1.5` is Apache 2.0; `gte-modernbert-base` is Apache 2.0 and **not gated**, so it needs no credential. Acceptable for personal use; the Gemma terms constrain redistribution of a bundled model. *(Amended 2026-09-06: the third candidate was `bge-large-en-v1.5`, MIT — see requirement 4.1.)*
 - Python 3.12, `uv`-managed, Windows 11.
 - All measurements must be reproducible on this machine. The benchmark document records hardware, driver, and runtime versions alongside results.
 
@@ -111,7 +111,15 @@ It is the foundation spec and the project's principal risk. Its central question
 
 #### Acceptance Criteria
 
-1. The Embedding Runtime shall support three candidate models: `embeddinggemma-300m`, `bge-large-en-v1.5`, and `nomic-embed-text-v1.5`.
+1. The Embedding Runtime shall support three candidate models: `embeddinggemma-300m`, `nomic-embed-text-v1.5`, and `gte-modernbert-base`.
+
+   **Amended 2026-09-06.** The third candidate was `bge-large-en-v1.5`, a 2023 model the project owner ranked last and wanted replaced with something modern and better qualified for the use case. Preference order is now EmbeddingGemma, then nomic, then the third slot. Two constraints shaped the replacement, both verified rather than assumed:
+   - **Dense architectures only.** `nomic-embed-text-v2-moe` scores better than v1.5 on BEIR and MIRACL but routes 8 experts top-2 per token; that conditional computation does not export cleanly to ONNX and cannot compile to a static-shape NPU graph. Nomic therefore stays at **v1.5**, whose dense architecture is what makes it exportable at all.
+   - **Size ceiling.** Task 3.2 found EmbeddingGemma's exported `model.onnx` is a single 1.22 GB protobuf against ONNX's 2 GB limit. `gte-modernbert-base` is 149M parameters, roughly 600 MB exported — half the compile cost of anything else here and comfortably clear of the ceiling.
+
+   `gte-modernbert-base` is Apache-2.0 and **not gated**, so unlike the primary candidate it is fetchable without a credential. It carries no Dense stage and uses **symmetric** text handling with no query or document instruction, so its templates are identity.
+
+   **It uses CLS pooling, not mean pooling** — confirmed from the model's own `1_Pooling/config.json` (`pooling_mode_cls_token = True`). `ModelProfile.pooling` is `Literal["mean"]` today and `postprocess.py` implements masked mean pooling only, so adding this candidate requires widening that literal and adding a CLS branch (`tokens[:, 0, :]`). That branch does not consult the attention mask at all, so it cannot reintroduce the mask-blind pooling hazard. Deferred to task 6.1, where a real export and compile happen anyway.
 2. The Embedding Runtime shall treat `embeddinggemma-300m` as the initial default candidate until the benchmark document supersedes that choice.
 3. When a model is prepared for a provider for the first time, the Embedding Runtime shall persist the resulting preparation artifacts for reuse.
 4. When valid preparation artifacts already exist for the requested model and provider, the Embedding Runtime shall reuse them instead of repeating preparation, and shall report that it did so.

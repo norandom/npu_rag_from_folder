@@ -66,16 +66,17 @@ Models are handled behind one interface so that benchmarking three candidates is
 - VitisAI EP requires **static tensor shapes**; sequence length is fixed at compile time, batch size 1 by default.
 - Strix supports NLP BF16 — BERT-style encoders are NPU-eligible. INT8-only targets are out of scope.
 - `--provider npu|cpu|auto` with **no implicit silent fallback**; the active provider must always be reported.
-- Candidate models are gated by license: `embeddinggemma-300m` under Gemma Terms of Use (gated, restricted), `bge-large-en-v1.5` MIT, `nomic-embed-text-v1.5` Apache 2.0.
+- Candidate models are gated by license: `embeddinggemma-300m` under Gemma Terms of Use (gated, restricted), `nomic-embed-text-v1.5` Apache 2.0, `gte-modernbert-base` Apache 2.0 and ungated. *(Amended 2026-09-06: the third candidate was `bge-large-en-v1.5`; see requirement 4.1.)*
 - All measurements must be reproducible on this machine; the benchmark document records hardware, driver, and SDK versions alongside results.
 
 ## Benchmark Deliverable
 
 An explicit, written artifact — not just numbers in a terminal. It must record:
 
-- **Primary candidate**: `embeddinggemma-300m` (user's stated preference). **Comparators**: `bge-large-en-v1.5`, `nomic-embed-text-v1.5`.
+- **Primary candidate**: `embeddinggemma-300m` (project owner's stated preference). **Comparators**: `nomic-embed-text-v1.5`, then `gte-modernbert-base`. *(Amended 2026-09-06: `bge-large-en-v1.5` replaced - see requirement 4.1 for the dense-architecture and size constraints that shaped the choice.)*
 - **Per model × per provider (NPU, CPU)**: chunks/sec throughput; wall-clock for a fixed representative batch; single-query embed latency (p50/p95); average and peak power draw plus energy per 1k chunks; peak RSS; model compile time and cache size on first vs. subsequent runs.
 - **Quality**: retrieval quality on a small hand-built query set drawn from the actual archive, so the energy/quality trade-off is visible rather than assumed.
 - **Fidelity**: BF16-vs-FP32 embedding divergence (cosine similarity against a CPU FP32 reference) to confirm quantization has not degraded the vectors.
 - **Methodology**: how measured, how power was sampled, how many runs, variance. Documented well enough to re-run and to trust.
 - **Verdict**: a recommended default model with stated reasoning, and the conditions under which a different choice would be better.
+
