@@ -18,7 +18,66 @@ dependencies = [
     "transformers>=4.44",
     "tokenizers>=0.20",
     "huggingface-hub>=0.26",
-    "optimum>=1.23",
+    # ONNX export (task 3.2). design.md's Technology Stack names `optimum` for
+    # this, and task 1.1 flagged that it had resolved to 2.x; the re-verification
+    # 3.2 was asked to perform found that NEITHER optimum branch is usable here:
+    #
+    #   - optimum 2.3.0 no longer contains an ONNX exporter at all. The
+    #     `optimum.exporters.onnx` package was split out into a separate
+    #     `optimum-onnx` distribution, which resolves to 0.1.0 and drags
+    #     transformers back to 4.57 and huggingface-hub back to 0.36 - a
+    #     downgrade of the stack models/acquire.py is already built against.
+    #   - `optimum<2` resolves to 1.27.0, which cannot even be imported under
+    #     transformers 5.x: `optimum/exporters/tasks.py` does
+    #     `from transformers import ... is_tf_available`, a name transformers 5
+    #     removed. Measured 2026-09-05: ImportError at import time.
+    #
+    # So `optimum` is dropped rather than pinned - nothing imports it, and the
+    # part of it this project wanted is no longer in it. The export is driven
+    # directly by `torch.onnx.export` (see the "export" group below). That is
+    # not a downgrade of ambition: the graph must be pinned to a STATIC shape,
+    # and a direct export from concrete example inputs produces exactly that,
+    # whereas optimum emits symbolic `batch_size`/`sequence_length` dims that
+    # would then need rewriting.
+    #
+    # `onnx` stays in the DEFAULT set, unlike torch: it is ~16 MB, it is the
+    # artifact format this whole feature is built on, and models/export.py
+    # imports it at module scope to read an exported graph back and verify its
+    # dims are static and its weights FP32 before publishing. Task 3.3's
+    # manifest and staleness checks read the same graphs.
+    "onnx>=1.17",
+]
+
+[project.optional-dependencies]
+# ONNX export (task 3.2), deliberately OPTIONAL and deliberately NOT in the
+# default dependency set above.
+#
+# `torch` is ~2.5 GB installed. Task 1.1 established that the default set stays
+# lean so a downstream consumer's plain `uv sync` works, and task 1.2 established
+# that heavyweight pieces live in an opt-in group - the same judgement applies
+# here, so exporting is opt-in rather than installed by default.
+#
+# To add it to THIS repository's environment, name the npu group in the same
+# command: `uv sync --extra export --group npu`. Do NOT run `uv sync --extra
+# export` on its own - per Implementation Note 1.2 any sync that does not name
+# the npu group DROPS it, leaving `onnxruntime` unimportable and the NPU
+# de-provisioned until `uv run python -m tools.provision_npu` repairs it. A
+# downstream consumer installing the published package is unaffected and simply
+# asks for `npu-rag[export]`.
+#
+# Nothing imports torch at module scope: `TorchTrunkExporter.export_graph`
+# imports it inside the method, so models/export.py is importable, unit-testable
+# and type-checkable in an environment that has never seen torch. Only a real
+# export needs this group, and consumers that receive prepared artifacts (4.4)
+# never do.
+#
+# `onnxscript` is torch's dependency, not ours: torch.onnx.export uses the
+# torch.export-based exporter by default from torch 2.9 and needs onnxscript to
+# emit the graph. It is named here rather than left implicit because torch does
+# not declare it, so an export without it fails at call time.
+export = [
+    "torch>=2.9",
+    "onnxscript>=0.3",
 ]
 
 [dependency-groups]

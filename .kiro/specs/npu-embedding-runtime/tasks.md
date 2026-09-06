@@ -90,7 +90,7 @@
   - _Requirements: 4.5_
   - _Boundary: ArtifactStore_
 
-- [ ] 3.2 Export models to ONNX at a fixed sequence length
+- [x] 3.2 Export models to ONNX at a fixed sequence length
   - Export the transformer trunk at the profile's compiled sequence length and batch size, keeping the graph at full precision
   - Extract and persist the dense-stage weights separately, since the export covers only the trunk
   - Report the failing stage when export cannot complete, without substituting another model
@@ -320,3 +320,9 @@
 - 3.1: acquisition deliberately does NOT use `RunTracker` - RunSummary requires provider_served and execution_mode, which acquisition genuinely lacks; forcing one would fabricate a 2.6 attribution. It uses a bare ProgressCallback instead. Confirmed correct by review.
 - 3.1: two non-blocking test gaps left open - the 40-hex revision boundary is not pinned (relaxing to {39,41} survives), and `parse_dotenv`'s deliberate refusal to strip inline `#` comments is documented but not tested (adding `.split('#')[0]` survives, and would silently truncate a credential). Close both if models/ is hardened later.
 - 3.1: `models/__init__.py` still exports nothing, so `acquire_model` is reachable only by full module path. Task 3.3 may want the re-export.
+- 3.2: `optimum` is DROPPED and design.md corrected in three places (lines 54, 138, 297). Verified non-destructively: `optimum-onnx` downgrades transformers 5.16.1->4.57.6 and huggingface-hub 1.30.0->0.36.2 (the stack acquire.py needs), and `optimum<2` resolves to 1.27.0 which imports `is_tf_available`, absent from all of transformers 5.16.1. Export runs directly through `torch.onnx.export` with `dynamic_shapes=None`, which pins every dim from the concrete example in one step.
+- 3.2: `torch`+`onnxscript` live in `[project.optional-dependencies].export` (an EXTRA, not a PEP 735 group) because groups never reach wheel metadata, so a consumer that must run preparation can opt in via `npu-rag[export]`. Default deps stay lean and `export.py` imports WITHOUT loading torch.
+- 3.2: `export.py` and its tests were INHERITED from an earlier interrupted run, not written under this task's TDD cycle. The inherited code shipped the requirement 4.6 anti-substitution guard as dead code (`if False and ...`) and its live test had substituted `all-MiniLM-L6-v2` - a model with NO dense stage - so the load-bearing extraction was never proven on real weights. Both fixed. Treat any other inherited code with the same suspicion: sweep for `if False`, `and False`, `or True`, unreachable branches.
+- 3.2: `model.onnx` for EmbeddingGemma is a SINGLE 1.22 GB protobuf with external_data=False, against ONNX's 2 GB ceiling. Fits for all three candidates but is tight; tasks 3.3/4.x should know. Measured: acquisition 126s cold, export 63s, dense.npz 19 MB.
+- 3.2: `DENSE_ORDER_KEY` in dense.npz is the PIPELINE order task 5.2 must iterate to apply the projections. A sorted order applies 768->3072->768 in the wrong sequence: right shape, right norm, WRONG MEANING. Task 5.2 must consume `order` and never re-derive it by sorting the weight names.
+- 3.2: three non-blocking test gaps left open on defensive branches (reviewer's N6/N10/N12): the int64 input-dtype check (export.py:611), the real reader's `activation` fidelity (export.py:538-541 - all three candidates use Identity today), and the symbolic hidden-width check (export.py:668). No fixture reaches any of them. Pick up when task 5.2 starts consuming `activation`, or if models/ is hardened later.

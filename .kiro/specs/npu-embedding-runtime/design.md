@@ -51,7 +51,7 @@ The design turns on one discovery finding: the Vitis AI execution provider parti
 
 - ONNX Runtime with the Vitis AI execution provider, obtained from **AMD's own package index at `https://pypi.amd.com/simple`** (`onnxruntime-vitisai`, `voe`) — not from PyPI, where `onnxruntime-vitisai` is absent and AMD's `voe` is a labelled dummy. Verified on this machine (2026-09-04): with `numpy<2` pinned and the `voe` wheel's mis-packaged DLL payload relocated (see research.md), the provider **registers and is selected in a pure uv-managed venv** — both guards pass. The environment is uv/venv only; conda is not installed and must not be assumed anywhere, including the isolated fallback, which — if ever needed — would be a second uv venv, not a conda env. Remaining gap: `vaiml.dll` (the BF16 compiler) is not shipped in these wheels, so the BF16 flow is unproven; sourcing it is the open item in task 1.3.
 - The driver-level XRT tooling, which is **already present without the SDK** at `C:\Windows\System32\AMD` (`xrt-smi.exe`, `pyxrt.pyd`). Telemetry therefore does not depend on installing the Ryzen AI SDK.
-- Hugging Face `transformers` / `tokenizers` for tokenization, `optimum` for ONNX export, `huggingface_hub` for gated acquisition.
+- Hugging Face `transformers` / `tokenizers` for tokenization, `torch.onnx.export` for ONNX export, `huggingface_hub` for gated acquisition. **Corrected 2026-09-05**: this originally named `optimum`, which proved unusable and was dropped in task 3.2 — `optimum-onnx` downgrades `transformers` 5.16.1 → 4.57.6 and `huggingface-hub` 1.30.0 → 0.36.2, breaking the stack acquisition is built on, while `optimum<2` resolves to 1.27.0 which imports `is_tf_available`, absent from transformers 5. Both claims verified non-destructively by dry-run and by grepping the installed package. `torch` is an opt-in extra (`npu-rag[export]`), never a default dependency.
 - NumPy for post-processing and fidelity measurement.
 - The vendor `xrt-smi` binary, invoked read-only as a subprocess.
 - **Constraint**: this package must not import from any other `npu_rag` sub-package. The dependency direction runs outward from here; nothing upstream exists.
@@ -135,7 +135,7 @@ Violations are errors, not style issues. `providers` must never import `service`
 |-------|------------------|-----------------|-------|
 | Runtime | Python 3.12, `uv`-managed | Package and dependency management | `uvx` launchability is a downstream requirement this spec must not break |
 | Inference | ONNX Runtime with Vitis AI EP (Ryzen AI 1.8) | NPU and CPU execution of the transformer | BF16 targeting on STX via a JSON `config_file` provider option |
-| Model prep | `optimum` ONNX export, `transformers`, `tokenizers` | Export trunk to ONNX; tokenization | Export yields token embeddings only; pipeline stages applied separately |
+| Model prep | `torch.onnx.export` (opt-in `export` extra), `transformers`, `tokenizers` | Export trunk to ONNX at fixed shape; tokenization | Export yields token embeddings only; pipeline stages applied separately. `optimum` was dropped in 3.2 — see Allowed Dependencies |
 | Numerics | NumPy | Masked mean pooling, Dense, normalization, fidelity comparison | Provider-independent by design |
 | Telemetry | `xrt-smi` (vendor CLI, `C:\Windows\System32\AMD`) | NPU power sampling and partition occupancy | STX-only; reports estimated Watts, no utilization metric |
 | Acquisition | `huggingface_hub` | Model download including gated repositories | EmbeddingGemma requires Gemma Terms acceptance |
@@ -294,7 +294,7 @@ Staleness is decided by the sidecar manifest, not by file presence: a manifest r
 | `CapabilityChecker` | Environment | Report environment readiness and execution mode | 1.1–1.6, 6.6 | `xrt.py` (P1), ONNX Runtime (P0) | Service |
 | `XrtSmiWrapper` | Environment | Read NPU power and partition occupancy | 1.1, 6.2, 6.8 | `xrt-smi` binary (P1) | Service |
 | `ModelProfiles` | Foundation | Declare per-model behavior as data | 3.4, 3.6, 4.1, 4.2 | none | State |
-| `ArtifactStore` | Models | Prepare, persist, validate, reuse compiled artifacts | 4.3–4.7, 8.5 | ONNX Runtime (P0), `optimum` (P0) | Service, Batch |
+| `ArtifactStore` | Models | Prepare, persist, validate, reuse compiled artifacts | 4.3–4.7, 8.5 | ONNX Runtime (P0), `torch` via the `export` extra (P0) | Service, Batch |
 | `TransformerBackend` | Providers | Execute a prepared graph, return token embeddings | 2.1–2.7, 5.1–5.5 | `ArtifactStore` (P0) | Service |
 | `EmbeddingService` | Service | The port: text to unit vectors with declared kind | 3.1–3.10, 2.6, 2.7, 8.3–8.6 | Backends (P0), `postprocess` (P0) | Service |
 | `BenchmarkHarness` | Bench | Measure the matrix under instrumentation | 6.1–6.8 | `EmbeddingService` (P0), `power.py` (P1) | Batch |
