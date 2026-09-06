@@ -118,7 +118,7 @@
   - _Requirements: 2.1, 2.2, 2.4, 2.5, 2.7_
   - _Boundary: TransformerBackend_
 
-- [ ] 4.2 (P) Implement the CPU backend as the full-precision reference
+- [x] 4.2 (P) Implement the CPU backend as the full-precision reference
   - Execute the exported graph through the default runtime provider at full precision
   - Serve forced CPU selection regardless of NPU availability
   - Observable: the CPU backend produces vectors for the same inputs the NPU backend accepts, at the same shape, and is selectable even when the NPU is present and healthy
@@ -339,3 +339,10 @@
 - 4.1: `resolve_backend` takes a required keyword-only `factories` beyond design.md's three-arg sketch, now recorded in design.md. The port must not construct its own adapters (import cycle inside one layer, against the ports-and-adapters seam), and it is REQUIRED rather than defaulted because a default pair is exactly the silent substitution 2.2 forbids. It is also what lets both branches of requirement 2 be exercised on a machine whose NPU works.
 - 4.1: the package-wide layer guard deferred by Notes 1.1 and 1.4 is now DONE - it walks every module, resolves relative imports against each file's containing package, and has a non-vacuity check. Reviewer verified it by planting a real `models` -> `service` inversion, which was caught.
 - 4.1: design.md's Requirements Traceability maps 2.7 to `service.py`, but `BoundBackend` correctly lives in `providers/base.py` per the task text and the section's own Invariants line. Touch up the traceability row when design.md is next edited; not a defect.
+
+- 4.2: SUITE-TIME DECISION POINT FOR 4.3. Three live test files (test_export_live, test_artifacts_live, test_cpu_live) each perform real MiniLM exports; the suite is now ~2 min and providers/ alone is ~17-31 s. Each module-scoped tmp dir means the export cannot be shared. Reviewer measured a session-scoped conftest fixture would save ~20 s today but would couple models/ and providers/ test modules through a shared conftest - not worth it yet. REVISIT AT 4.3/4.4: a third and fourth real export pushes the saving to ~60-90 s, and a suite people skip protects nothing.
+- 4.2: CI CONSEQUENCE, applies to every task from here. GitHub runners have NO NPU, so every `*_live.py` test will skip there. Any assertion whose only real coverage is a live test is silently uncovered in CI. Task 4.2 hit exactly this: an all-ones mask fixture made a unit-level mask assertion vacuous, catchable only by the live partial-mask test. Keep unit-level coverage genuinely independent of the live suite.
+- 4.2: guard one failing (CPUExecutionProvider unregistered) raises `EnvironmentError_`, NOT `ExecutionError` - a missing built-in CPU provider is a broken ORT installation, not a graph that would not run, and miscategorising it would blunt 8.2. Reviewer ruled this correct; 8.1 is preserved because EnvironmentError_ carries default_stage="environment".
+- 4.2: no CPU `BackendFactory` ships. `BackendFactory` is `(profile, capability) -> TransformerBackend` with nowhere to get an artifact root, so TASK 5.3 must wire `ensure_prepared(profile, ProviderChoice.CPU, root) -> CpuBackend(artifact, profile)`.
+- 4.2: the CPU `Session`/`SessionFactory` seam deliberately CANNOT express `SessionOptions` or `provider_options` - that is what makes "reduces precision nowhere" structural rather than promised. Task 4.3 needs both (the `config_file` option is what engages BF16), so vitisai.py must define its OWN factory rather than widening this one.
+
