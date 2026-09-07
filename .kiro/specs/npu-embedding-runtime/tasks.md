@@ -147,7 +147,10 @@
   - _Boundary: IsolatedBackend_
   - _Depends: 1.3, 4.1_
 
-- [ ] 5. Embedding service
+- [x] 5. Embedding service — **CLOSED 2026-09-07, all five sub-tasks reviewed and approved**
+  - Closing note. 5.1-5.5 between them discharge 22 requirement sections: **the whole of requirement 3 (3.1-3.10), Embedding Generation** — one vector per input in order, the declared-kind contract with no default, per-model document and query conventions, unit-normalised vectors, the published dimension and compiled maximum, the exposed tokenizer and its if-and-only-if length agreement, truncation reporting, and determinism — plus requirement 2's serving half (2.2, 2.4, 2.5, 2.6, 2.7), 1.1, 1.4, 4.1, 5.3, 8.3, 8.4 and 8.6.
+  - Two of the five were not in the original plan. 5.4 and 5.5 were added on 2026-09-07 after `/kiro-validate-impl` returned NO-GO: 5.4 closed three confirmed defects that no open task owned, and 5.5 took requirement 4.1's model swap out of 6.1, whose `bench fixtures` boundary did not contain `profiles.py` or `postprocess.py`.
+  - What this closure does **not** claim. Requirement 2.5's "before embedding using the CPU" is fully met at `resolve_backend` but only partly at the service port — `ProgressUpdate` carries no `fallback_reason`, so a caller first sees it in `EmbedResult` after the run. And `build_service` still prepares eagerly, so on that entry point the "prepares nothing" property does not hold under an ISOLATED or UNAVAILABLE verdict. Both are recorded in the 5.4 notes below, both are outside any shipped task's boundary, and neither has a production caller yet. **Task 7.1 verifies the explicit-provider contract end to end and is the natural place to settle them.**
 
 - [x] 5.1 (P) Expose the tokenizer and the length-measurement contract
   - Publish the active model's tokenizer so a consumer can measure input length by the same rule the service applies
