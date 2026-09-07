@@ -23,6 +23,7 @@ selection, title rendering and truncation all invisible at once.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -194,6 +195,33 @@ def incapable() -> CapabilityReport:
         driver_version="32.0.20102.3930",
         runtime_version=None,
         device_name=None,
+        power_reporting_supported=True,
+    )
+
+
+def isolated() -> CapabilityReport:
+    """The verdict this machine reaches after a bare ``uv sync`` (task 5.4).
+
+    The device is still enumerated by ``xrt-smi`` while the vendor group is gone
+    from the interpreter, so the provider is unregistered: device present plus
+    provider absent is exactly `ExecutionMode.ISOLATED`. It is a real, reachable
+    state rather than a hypothetical one, and no isolated backend exists to
+    serve it.
+    """
+    return CapabilityReport(
+        conditions=(
+            Condition(
+                name=CONDITION_PROVIDER_REGISTERED,
+                satisfied=False,
+                observed="absent from get_available_providers()",
+                required="VitisAIExecutionProvider",
+                remediation="run `uv run python -m tools.provision_npu`",
+            ),
+        ),
+        execution_mode=ExecutionMode.ISOLATED,
+        driver_version="32.0.20102.3930",
+        runtime_version=None,
+        device_name="NPU Compute Accelerator Device",
         power_reporting_supported=True,
     )
 
@@ -1298,8 +1326,14 @@ def test_build_service_gives_the_service_its_dense_stage(
         prepare=preparer,
     )
     with_dense = built.embed_documents(documents(*SAMPLE), ProviderChoice.CPU)
+    # The comparison service declares *no* Dense stage rather than declaring one
+    # and omitting it: since task 5.4 the latter is unconstructible, which is
+    # the point of that guard. Everything else about the two profiles - id
+    # aside - is identical, so the only difference in the vectors is the
+    # projection.
     without = service(
-        profile=DENSE_PROFILE, cpu=FakeBackend(ProviderChoice.CPU)
+        profile=dataclasses.replace(DENSE_PROFILE, has_dense_stage=False),
+        cpu=FakeBackend(ProviderChoice.CPU),
     ).embed_documents(documents(*SAMPLE), ProviderChoice.CPU)
 
     assert not np.allclose(with_dense.vectors, without.vectors), (
@@ -1331,6 +1365,173 @@ def test_build_service_propagates_its_preparer_into_the_backend_builder(
         "one preparation for the dense weights, one for the backend"
     )
     assert {root for _, _, root in preparer.calls} == {tmp_path}
+
+
+# --------------------------------------------------------------------------
+# Task 5.4, defect 1: the isolated verdict meets the REAL factory pair
+#
+# Task 5.3 proved the resolution policy against a stub backend that reported
+# ISOLATED - an adapter the shipped system does not contain. Both halves were
+# individually correct and individually tested; the join was untested and
+# wrong. These tests therefore go through `default_backend_builder`, the only
+# NPU factory that exists, with `ensure_prepared` replaced at its own injectable
+# seam so the assertion "nothing was prepared" is observable rather than argued.
+# --------------------------------------------------------------------------
+
+
+def isolated_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    capability: CapabilityReport | None = None,
+) -> tuple[EmbeddingService, RecordingPreparer, BackendRecorder]:
+    """A service wired to the production builder in an isolated-verdict world."""
+    npu_recorder = BackendRecorder(ProviderChoice.NPU)
+    monkeypatch.setattr(service_module, "VitisAIBackend", npu_recorder)
+    monkeypatch.setattr(
+        service_module, "CpuBackend", BackendRecorder(ProviderChoice.CPU)
+    )
+    preparer = RecordingPreparer(prepared(tmp_path))
+    subject = EmbeddingService(
+        profile=PROFILE,
+        capability=isolated() if capability is None else capability,
+        tokenizer=model_tokenizer(),
+        backends=default_backend_builder(tmp_path, prepare=preparer),
+    )
+    return subject, preparer, npu_recorder
+
+
+def test_auto_under_an_isolated_verdict_serves_the_cpu_without_preparing_the_npu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirements 2.4, 2.5 and 1.4 through the wiring that actually ships.
+
+    Preparing for the NPU here is a 160-310 s compile followed by a session that
+    cannot register the provider. The old policy called it "available", so an
+    ``auto`` run paid that cost and then raised instead of reporting the reason
+    and serving on the CPU.
+    """
+    subject, preparer, npu_recorder = isolated_service(tmp_path, monkeypatch)
+
+    result = subject.embed_documents(documents(*SAMPLE), ProviderChoice.AUTO)
+
+    assert result.provider_served is ProviderChoice.CPU
+    assert result.fallback_reason is not None
+    assert ExecutionMode.ISOLATED.value in result.fallback_reason
+    assert len(result.vectors) == len(SAMPLE)
+    assert preparer.providers == [ProviderChoice.CPU], (
+        "an NPU artifact was prepared for a route no adapter can take"
+    )
+    assert npu_recorder.artifacts == []
+
+
+def test_explicit_npu_under_an_isolated_verdict_prepares_nothing_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirements 2.2 and 1.4: refused at resolution, not at session creation.
+
+    Failing later is not equivalent. The diagnostic would name the session as
+    the failing stage and misattribute the cause, and the compile would already
+    have been paid for.
+    """
+    subject, preparer, npu_recorder = isolated_service(tmp_path, monkeypatch)
+
+    with pytest.raises(NpuUnavailableError) as raised:
+        subject.embed_documents(documents(*SAMPLE), ProviderChoice.NPU)
+
+    assert preparer.calls == []
+    assert npu_recorder.artifacts == []
+    assert ExecutionMode.ISOLATED.value in str(raised.value)
+    assert CONDITION_PROVIDER_REGISTERED in str(raised.value)
+
+
+def test_the_same_wiring_does_prepare_the_npu_when_it_is_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-vacuity for both tests above.
+
+    Their load-bearing assertion is that the preparer was never called for the
+    NPU. A builder that prepared nothing under any verdict - a broken seam, a
+    monkeypatch that silently took no effect - would satisfy that for the wrong
+    reason. Under an in-process verdict the identical wiring must prepare an NPU
+    artifact and serve on the NPU.
+    """
+    subject, preparer, npu_recorder = isolated_service(
+        tmp_path, monkeypatch, capability=capable()
+    )
+
+    result = subject.embed_documents(documents(*SAMPLE), ProviderChoice.AUTO)
+
+    assert result.provider_served is ProviderChoice.NPU
+    assert result.fallback_reason is None
+    assert preparer.providers == [ProviderChoice.NPU]
+    assert npu_recorder.requested == [ProviderChoice.AUTO]
+
+
+# --------------------------------------------------------------------------
+# Task 5.4, defect 2: a declared Dense stage cannot be left out
+# --------------------------------------------------------------------------
+
+
+def test_a_service_for_a_dense_profile_refuses_an_empty_dense_stage() -> None:
+    """`load_dense_layers` guards the missing *file*; this guards the omitted
+    *argument*, which no downstream check can see.
+
+    The trunk's hidden width equals the published dimension - EmbeddingGemma
+    chains 768 -> 3072 -> 768 - so skipping the projection yields vectors of the
+    right width, the right dtype and unit norm that mean something else. design.md
+    records this as the risk only requirement 6.4's retrieval-quality
+    measurement can detect. `build_service` wires the layers correctly today,
+    and task 6.3's harness is the second construction site.
+    """
+    with pytest.raises(ValueError, match="Dense"):
+        EmbeddingService(
+            profile=DENSE_PROFILE,
+            capability=capable(),
+            tokenizer=model_tokenizer(DENSE_PROFILE),
+            backends=RecordingBuilder(cpu=FakeBackend(ProviderChoice.CPU)),
+        )
+
+
+def test_the_dense_refusal_names_the_model_and_the_way_out() -> None:
+    """Requirement 8.1's spirit at construction: say which model, and what to do."""
+    with pytest.raises(ValueError) as raised:
+        EmbeddingService(
+            profile=DENSE_PROFILE,
+            capability=capable(),
+            tokenizer=model_tokenizer(DENSE_PROFILE),
+            backends=RecordingBuilder(cpu=FakeBackend(ProviderChoice.CPU)),
+            dense=(),
+        )
+
+    message = str(raised.value)
+    assert DENSE_PROFILE.model_id in message
+    assert "load_dense_layers" in message
+
+
+def test_a_dense_profile_constructs_once_it_is_given_its_layers(
+    tmp_path: Path,
+) -> None:
+    layers = load_dense_layers(prepared(tmp_path, dense=True), DENSE_PROFILE)
+
+    subject = EmbeddingService(
+        profile=DENSE_PROFILE,
+        capability=capable(),
+        tokenizer=model_tokenizer(DENSE_PROFILE),
+        backends=RecordingBuilder(cpu=FakeBackend(ProviderChoice.CPU)),
+        dense=layers,
+    )
+
+    assert subject.contract().model_id == DENSE_PROFILE.model_id
+
+
+def test_a_profile_with_no_dense_stage_still_constructs_with_no_layers() -> None:
+    """Non-vacuity: the guard keys on the profile's declaration, not on
+    emptiness. A check that simply rejected an empty tuple would break every
+    model that has no Dense stage - two of the three shipping profiles."""
+    assert PROFILE.has_dense_stage is False
+
+    assert service().contract().model_id == PROFILE.model_id
 
 
 # --------------------------------------------------------------------------

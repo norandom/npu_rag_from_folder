@@ -29,9 +29,14 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from npu_rag.embedding.errors import NpuUnavailableError
+from npu_rag.embedding.errors import (
+    EmbeddingRuntimeError,
+    IsolatedWorkerError,
+    NpuUnavailableError,
+)
 from npu_rag.embedding.profiles import ModelProfile, initial_default_profile
 from npu_rag.embedding.providers.base import (
+    SERVABLE_EXECUTION_MODES,
     BackendFactories,
     BoundBackend,
     TransformerBackend,
@@ -371,20 +376,37 @@ def test_the_npu_failure_carries_provider_model_and_stage() -> None:
     assert error.stage == "provider_resolution"
 
 
-@pytest.mark.parametrize("mode", [ExecutionMode.IN_PROCESS, ExecutionMode.ISOLATED])
-def test_explicit_npu_succeeds_wherever_the_npu_is_reachable(
-    mode: ExecutionMode,
-) -> None:
-    """Isolated execution is still the NPU serving (requirement 5.1)."""
+def test_explicit_npu_succeeds_where_the_npu_is_reachable_in_process() -> None:
+    """The one verdict an adapter exists for (`SERVABLE_EXECUTION_MODES`)."""
     bundle, npu_factory, _ = factories()
 
     backend, reason = resolve_backend(
-        ProviderChoice.NPU, PROFILE, REPORTS[mode], factories=bundle
+        ProviderChoice.NPU, PROFILE, IN_PROCESS, factories=bundle
     )
 
     assert backend.provider is ProviderChoice.NPU
     assert reason is None
     assert len(npu_factory.calls) == 1
+
+
+def test_explicit_npu_is_refused_under_an_isolated_verdict() -> None:
+    """Task 5.4, defect 1. An ``ISOLATED`` verdict says the hardware is there
+    and this interpreter cannot reach it. Requirement 5.1's separate-environment
+    adapter is what would reach it, and task 4.4 closed without building one, so
+    there is no NPU route at all - and requirement 1.4 says NPU execution must
+    not then be attempted. Refusing here, at resolution, is what makes that
+    true: the factory below performs a 160-310 s compile before its session
+    construction could ever fail."""
+    bundle, npu_factory, cpu_factory = factories()
+
+    with pytest.raises(NpuUnavailableError) as caught:
+        resolve_backend(ProviderChoice.NPU, PROFILE, ISOLATED, factories=bundle)
+
+    assert npu_factory.calls == [], (
+        "a compile was started for a route that does not exist"
+    )
+    assert cpu_factory.calls == []
+    assert "isolat" in str(caught.value)
 
 
 def test_a_factory_that_hands_back_the_wrong_provider_is_refused() -> None:
@@ -426,19 +448,38 @@ def test_explicit_cpu_is_served_whatever_the_npu_is_doing(
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", [ExecutionMode.IN_PROCESS, ExecutionMode.ISOLATED])
-def test_auto_prefers_the_npu_where_it_is_available(mode: ExecutionMode) -> None:
+def test_auto_prefers_the_npu_where_it_is_available() -> None:
     """Requirement 2.4."""
     bundle, npu_factory, cpu_factory = factories()
 
     backend, reason = resolve_backend(
-        ProviderChoice.AUTO, PROFILE, REPORTS[mode], factories=bundle
+        ProviderChoice.AUTO, PROFILE, IN_PROCESS, factories=bundle
     )
 
     assert backend.provider is ProviderChoice.NPU
     assert reason is None
     assert len(npu_factory.calls) == 1
     assert cpu_factory.calls == []
+
+
+def test_auto_falls_back_under_an_isolated_verdict_without_building_the_npu() -> None:
+    """Task 5.4, defect 1, requirements 2.4 and 2.5.
+
+    ``auto`` may substitute the CPU, but only after saying why - and *before*
+    paying for a route that does not exist. The factory assertion is the half
+    that matters: a policy that bound the NPU factory and then failed would have
+    spent a full compile first, which is the defect this closes.
+    """
+    bundle, npu_factory, cpu_factory = factories()
+
+    backend, reason = resolve_backend(
+        ProviderChoice.AUTO, PROFILE, ISOLATED, factories=bundle
+    )
+
+    assert backend.provider is ProviderChoice.CPU
+    assert reason is not None and reason.strip() != ""
+    assert npu_factory.calls == [], "the NPU factory ran for an unreachable NPU"
+    assert len(cpu_factory.calls) == 1
 
 
 def test_auto_falls_back_to_the_cpu_with_a_reason() -> None:
@@ -482,10 +523,12 @@ def test_a_reason_is_returned_exactly_when_the_run_falls_back(
     a run that did, so this sweeps the whole grid rather than the happy corner.
     """
     bundle, _, _ = factories()
-    falls_back = (
-        choice is ProviderChoice.AUTO and mode is ExecutionMode.UNAVAILABLE
-    )
-    raises = choice is ProviderChoice.NPU and mode is ExecutionMode.UNAVAILABLE
+    # ``ISOLATED`` sits with ``UNAVAILABLE`` rather than with ``IN_PROCESS``:
+    # both name an environment this build cannot reach the NPU from, and the
+    # only difference is why. See `SERVABLE_EXECUTION_MODES`.
+    unusable = mode is not ExecutionMode.IN_PROCESS
+    falls_back = choice is ProviderChoice.AUTO and unusable
+    raises = choice is ProviderChoice.NPU and unusable
 
     if raises:
         with pytest.raises(NpuUnavailableError):
@@ -516,9 +559,76 @@ def test_the_profile_and_report_reach_the_factory_unchanged() -> None:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", [ExecutionMode.IN_PROCESS, ExecutionMode.ISOLATED])
-def test_a_reachable_npu_has_no_unavailability_reason(mode: ExecutionMode) -> None:
-    assert npu_unavailable_reason(REPORTS[mode]) is None
+def test_a_reachable_npu_has_no_unavailability_reason() -> None:
+    assert npu_unavailable_reason(IN_PROCESS) is None
+
+
+def test_only_in_process_execution_has_an_adapter_behind_it() -> None:
+    """Task 5.4, defect 1, stated as the policy's own premise.
+
+    `SERVABLE_EXECUTION_MODES` is the single place that says which verdicts an
+    adapter exists for. It is one element today because task 4.4 closed as NOT
+    APPLICABLE: `IsolatedBackend` was never built, and design.md makes it
+    conditional on exactly this verdict ("`IsolatedBackend` is implemented
+    **only if** `CapabilityChecker` reports `ISOLATED`"). Reviving that path is
+    a one-line change here plus the adapter, which is why the set exists rather
+    than an ``is IN_PROCESS`` comparison scattered through the branches.
+    """
+    assert SERVABLE_EXECUTION_MODES == frozenset({ExecutionMode.IN_PROCESS})
+    assert ExecutionMode.ISOLATED not in SERVABLE_EXECUTION_MODES
+
+
+def test_the_vocabulary_for_isolated_execution_survives_the_policy_change() -> None:
+    """Note 4.4 keeps the isolated vocabulary deliberately, so the path can be
+    revived without redesign. 5.4 changes what the policy *does* with the
+    verdict; it does not delete the verdict, the error, or the mode a backend
+    reports for every operation it serves (requirement 5.3). The delegation of
+    an adapter's own ``ISOLATED`` execution mode is pinned by
+    `test_the_binding_is_itself_a_backend_and_delegates_every_member`."""
+    assert ExecutionMode.ISOLATED.value == "isolated"
+    assert issubclass(IsolatedWorkerError, EmbeddingRuntimeError)
+    assert ISOLATED.execution_mode is ExecutionMode.ISOLATED
+
+
+def test_an_isolated_verdict_reports_isolation_as_the_reason() -> None:
+    """Task 5.4, defect 1, requirement 2.5's "specific reason".
+
+    Two distinct things must be in the string, and each kills a different wrong
+    implementation: the isolation itself, which no unmet condition mentions (a
+    reason built from conditions alone would read as a plain provisioning
+    fault), and the unmet condition, without which the reason only repeats a
+    verdict the caller already holds.
+
+    Their ORDER is asserted too. ``base.py`` documents the isolation sentence as
+    coming first - said before the unmet conditions - because an operator who
+    reads the provisioning fault first will try to fix it, when the thing that
+    actually stops the run is that no isolated adapter was ever built. Review's
+    mutation pass planted ``parts.append`` in place of ``parts.insert(0, ...)``
+    and it survived the whole suite: membership cannot see position.
+    """
+    reason = npu_unavailable_reason(ISOLATED)
+
+    assert reason is not None
+    assert ExecutionMode.ISOLATED.value in reason
+    assert "no isolated backend" in reason
+    assert CONDITION_PROVIDER_REGISTERED in reason
+    assert f"run the provisioner to fix {CONDITION_PROVIDER_REGISTERED}" in reason
+    assert reason.index("no isolated backend") < reason.index(
+        CONDITION_PROVIDER_REGISTERED
+    )
+
+
+def test_the_isolated_reason_is_not_the_unavailable_reason() -> None:
+    """Non-vacuity for the test above: the two verdicts must not collapse into
+    one message. ``ISOLATED`` means the hardware is present and out of reach
+    from here; ``UNAVAILABLE`` on this fixture means there is no device at all,
+    and an operator handed the wrong one of those looks in the wrong place."""
+    isolated = npu_unavailable_reason(ISOLATED)
+    unavailable = npu_unavailable_reason(UNAVAILABLE)
+
+    assert isolated is not None and unavailable is not None
+    assert isolated != unavailable
+    assert ExecutionMode.ISOLATED.value not in unavailable
 
 
 def test_an_unreachable_npu_reports_every_unmet_condition() -> None:
@@ -575,6 +685,10 @@ def test_the_binding_is_frozen_so_the_provider_cannot_change_mid_run() -> None:
 
 
 def test_the_binding_is_itself_a_backend_and_delegates_every_member() -> None:
+    # The adapter's own ``execution_mode`` is what requirement 5.3 reports, and
+    # it is the adapter's to state - so the binding must pass through a value
+    # the *environment* verdict does not name. Resolution runs against an
+    # in-process report because that is the verdict an NPU adapter is built for.
     inner = FakeBackend(
         ProviderChoice.NPU,
         execution_mode=ExecutionMode.ISOLATED,
@@ -583,7 +697,7 @@ def test_the_binding_is_itself_a_backend_and_delegates_every_member() -> None:
     bundle, _, _ = factories(npu=inner)
 
     backend, _reason = resolve_backend(
-        ProviderChoice.NPU, PROFILE, ISOLATED, factories=bundle
+        ProviderChoice.NPU, PROFILE, IN_PROCESS, factories=bundle
     )
 
     assert isinstance(backend, TransformerBackend)

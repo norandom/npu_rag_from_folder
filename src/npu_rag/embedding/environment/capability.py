@@ -115,16 +115,39 @@ DOCUMENTED_MINIMUM_DRIVER_VERSION = "32.0.203.280"
 VENDOR_ENVIRONMENT_VARIABLES = ("RYZEN_AI_INSTALLATION_PATH", "XLNX_VART_FIRMWARE")
 
 #: The native payload that must sit beside ONNX Runtime for the Vitis AI
-#: provider to be genuinely installed rather than merely present in name.
-#: ``onnxruntime_vitisai_ep.dll`` is the provider bridge, stranded by the
-#: ``voe`` wheel's mismatched data-directory version and relocated by
-#: ``tools/provision_npu.py``; ``vaiml.dll`` is the BF16 compiler the NLP
-#: encoder flow needs on Strix; ``vaip_config.json`` is the ``config_file``
-#: provider option that switches the device data type to bfloat16. All three
-#: come from outside PyPI, and a build missing any of them registers the
-#: provider and then fails in native code (research.md, second probe).
+#: provider to be genuinely installed rather than merely present in name. Every
+#: file here comes from outside PyPI, and a build missing any of them registers
+#: the provider and then fails in native code (research.md, second probe) - the
+#: failure mode this whole condition exists to pre-empt, because it looks like
+#: success until a session is created.
+#:
+#: Two provenances, and the split is load-bearing (Note 1.2):
+#:
+#: - **Stranded in the ``voe`` wheel.** ``onnxruntime_vitisai_ep.dll`` is the
+#:   provider bridge; ``aiecompiler_client.dll``, ``dyn_dispatch_core.dll`` and
+#:   ``onnxruntime_vitis_ai_custom_ops.dll`` are its native dependencies. The
+#:   wheel declares version ``1.7.0`` while its data directory is named for a
+#:   longer development version, so installers leave all four in that directory
+#:   instead of merging them into ``onnxruntime/capi``. Provisioning relocates
+#:   them.
+#: - **Absent from the wheels entirely.** ``vaiml.dll`` is the BF16 compiler the
+#:   NLP encoder flow needs on Strix; ``vaip_config.json`` is the ``config_file``
+#:   provider option that switches the device data type to bfloat16. Both are
+#:   extracted from the Ryzen AI NuGet package.
+#:
+#: **This list must equal ``tools/provision_npu.py``'s ``STRANDED_DLLS`` plus
+#: its ``NUGET_PAYLOAD``.** The duplication is forced - design.md's Out of
+#: Boundary says this package detects and reports and never mutates the system,
+#: so it must not import from ``tools/`` - and the drift it invites is real:
+#: until task 5.4 this named three of the six, omitting exactly the three whose
+#: absence produces the native access violation. ``tests/tools/`` may import
+#: both sides and asserts the equality, which is the only mechanism the boundary
+#: leaves available.
 VENDOR_PAYLOAD_FILES = (
     "onnxruntime_vitisai_ep.dll",
+    "aiecompiler_client.dll",
+    "dyn_dispatch_core.dll",
+    "onnxruntime_vitis_ai_custom_ops.dll",
     "vaiml.dll",
     "vaip_config.json",
 )

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from npu_rag.embedding.environment.capability import VENDOR_PAYLOAD_FILES
 from tools import provision_npu
 from tools.provision_npu import (
     NUGET_PAYLOAD,
@@ -451,6 +452,56 @@ def test_bf16_payload_covers_the_compiler_and_its_provider_config() -> None:
     vaip_config.json is the `config_file` provider option that switches the
     device target to bfloat16. Neither ships in the AMD-index wheels."""
     assert set(NUGET_PAYLOAD) == {"vaiml.dll", "vaip_config.json"}
+
+
+# --------------------------------------------------------------------------
+# The forced duplication between provisioning and the capability check
+#
+# Task 5.4, defect 3. design.md's Out of Boundary says the package detects and
+# reports and never mutates the system, so `environment/capability.py` must not
+# import from `tools/`. The payload filenames are therefore written down twice.
+# What is *not* forced is that the two can drift silently: this file may import
+# both sides, so the relation between them is a test rather than a comment.
+#
+# Implementation Note 1.5 said "the two lists must be changed together". They
+# had already diverged when this test was written - the check covered three
+# files where provisioning installs six - and the three it omitted were the
+# stranded DLLs whose absence lets the provider register and then die inside
+# native code, which is the exact failure the check exists to pre-empt.
+# --------------------------------------------------------------------------
+
+
+def test_the_capability_check_covers_every_file_provisioning_installs() -> None:
+    assert set(VENDOR_PAYLOAD_FILES) == set(STRANDED_DLLS) | set(NUGET_PAYLOAD), (
+        "environment/capability.py's VENDOR_PAYLOAD_FILES and provisioning's "
+        "STRANDED_DLLS + NUGET_PAYLOAD have drifted apart; a file provisioning "
+        "installs that the check does not verify is a file whose absence the "
+        "check will report as a healthy environment"
+    )
+
+
+def test_every_stranded_dll_is_verified_by_the_capability_check() -> None:
+    """The half of the equality above that carries the consequence.
+
+    ``tools/provision_npu.py``'s own module docstring on these four: "Without
+    these libraries the provider registers and *then* session creation dies with
+    a native access violation - a failure that looks like success until it
+    crashes." A capability report that called such an environment installed
+    would be worse than no report.
+    """
+    assert set(STRANDED_DLLS) <= set(VENDOR_PAYLOAD_FILES)
+    assert len(STRANDED_DLLS) == 4
+
+
+def test_the_payload_lists_name_no_file_twice() -> None:
+    """Non-vacuity for the equality: it compares sets, so a duplicated entry on
+    either side would not show up there while still being a mistake."""
+    for names in (VENDOR_PAYLOAD_FILES, STRANDED_DLLS, NUGET_PAYLOAD):
+        assert len(set(names)) == len(names)
+    assert not set(STRANDED_DLLS) & set(NUGET_PAYLOAD), (
+        "the provenance split is load-bearing (Note 1.2): four DLLs come from "
+        "the voe wheel and two files from the Ryzen AI NuGet package"
+    )
 
 
 # --------------------------------------------------------------------------

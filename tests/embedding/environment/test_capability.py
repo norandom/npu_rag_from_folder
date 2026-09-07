@@ -540,11 +540,15 @@ def test_vendor_runtime_satisfied_only_with_the_full_payload() -> None:
     installed runtime."""
 
     def probe_partial() -> RuntimeProbe:
+        # Derived from the list rather than spelled out, so the partition stays
+        # valid as the payload grows. Task 5.4 added three files to it, and a
+        # hardcoded pair would have failed the dataclass invariant instead of
+        # exercising the branch.
         return RuntimeProbe(
             version="1.23.2.dev20260117",
             available_providers=(VITISAI_PROVIDER, "CPUExecutionProvider"),
-            payload_present=("onnxruntime_vitisai_ep.dll",),
-            payload_missing=("vaiml.dll", "vaip_config.json"),
+            payload_present=VENDOR_PAYLOAD_FILES[:1],
+            payload_missing=VENDOR_PAYLOAD_FILES[1:],
             unavailable_reason=None,
         )
 

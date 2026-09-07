@@ -377,7 +377,18 @@ def default_backend_builder(
 
 
 class EmbeddingService:
-    """Turns declared-kind text into unit vectors and reports what happened."""
+    """Turns declared-kind text into unit vectors and reports what happened.
+
+    **A declared Dense stage cannot be left out** (task 5.4, defect 2).
+    ``dense`` has a default because most profiles have no Dense stage, and a
+    default is exactly how the one that does could be skipped: applying no
+    projection is `apply_dense_stages(pooled, ())`, the identity, followed by
+    normalization - correctly shaped, correctly normalized, semantically wrong,
+    which design.md names as this boundary's own risk. `load_dense_layers`
+    guards the missing *file*; nothing guarded the omitted *argument* until the
+    constructor did. `build_service` has always wired it, and task 6.3's
+    benchmark harness is the second construction site this exists for.
+    """
 
     def __init__(
         self,
@@ -389,6 +400,17 @@ class EmbeddingService:
         dense: Sequence[DenseLayer] = (),
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
+        if profile.has_dense_stage and not dense:
+            raise ValueError(
+                f"{profile.model_id} applies a Dense stage between pooling and "
+                "normalization and no layers were supplied. Embedding without "
+                "it produces vectors of the right width, the right dtype and "
+                "unit norm that mean something else - the trunk's hidden width "
+                "equals the published dimension, so not even a dimension check "
+                "can see it, and only a retrieval-quality measurement ever "
+                "would. Pass dense=load_dense_layers(artifact, profile), or "
+                "use build_service, which does it"
+            )
         self._profile = profile
         self._capability = capability
         self._tokens = tokenizer

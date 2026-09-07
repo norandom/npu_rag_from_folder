@@ -65,7 +65,7 @@ reach ``service`` or ``bench``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -80,6 +80,7 @@ from npu_rag.embedding.types import (
 )
 
 __all__ = [
+    "SERVABLE_EXECUTION_MODES",
     "BackendFactories",
     "BackendFactory",
     "BoundBackend",
@@ -87,6 +88,38 @@ __all__ = [
     "npu_unavailable_reason",
     "resolve_backend",
 ]
+
+#: The execution-mode verdicts an NPU adapter actually exists for.
+#:
+#: One element, and which one is a fact about this build rather than about the
+#: requirements. `ExecutionMode.ISOLATED` says the hardware is present and
+#: unreachable from *this* interpreter; requirement 5.1's separate-environment
+#: adapter is what would reach it, and design.md makes that adapter conditional
+#: on exactly this verdict - "`IsolatedBackend` is implemented **only if**
+#: `CapabilityChecker` reports `ISOLATED`". Task 1.3 measured `IN_PROCESS` on
+#: this machine, so task 4.4 closed as not applicable and no isolated adapter
+#: was ever built.
+#:
+#: Treating `ISOLATED` as servable while nothing can serve it is what task 5.4
+#: closes: the policy claimed a route, `auto` bound the NPU factory, paid a
+#: 160-310 s compile, and only then failed inside session construction - with
+#: the vendor runtime absent, which requirement 1.4 says forbids attempting NPU
+#: execution at all.
+#:
+#: Reviving the isolated path is this line plus the adapter. The verdict, the
+#: `IsolatedWorkerError` taxonomy entry and `TransformerBackend.execution_mode`
+#: all stay exactly where they are (Note 4.4), so nothing here needs redesigning
+#: first.
+SERVABLE_EXECUTION_MODES: Final = frozenset({ExecutionMode.IN_PROCESS})
+
+#: Said before the unmet conditions, because no condition mentions it. The
+#: conditions explain why the provider is missing *here*; only this says that
+#: being reachable elsewhere is of no use to a build with no way to get there.
+_NO_ISOLATED_BACKEND = (
+    f"NPU execution is reachable only in isolation "
+    f"(execution_mode={ExecutionMode.ISOLATED.value}) and no isolated backend "
+    "is built, so nothing in this process can reach the hardware"
+)
 
 
 # --------------------------------------------------------------------------
@@ -153,10 +186,12 @@ class TransformerBackend(Protocol):
 class BackendFactory(Protocol):
     """Builds one adapter for a profile in a known environment.
 
-    The capability report is passed rather than re-derived so that the NPU
-    factory can choose between the in-process and isolated adapters from the
-    same verdict the policy used, instead of probing the environment a second
-    time and possibly disagreeing with it.
+    The capability report is passed rather than re-derived so that a factory
+    reads the same verdict the policy used, instead of probing the environment a
+    second time and possibly disagreeing with it. It was meant to let the NPU
+    factory pick between the in-process and isolated adapters; with only the
+    former built, `SERVABLE_EXECUTION_MODES` settles that question in the policy
+    and no factory needs to re-decide it (task 5.4, defect 1).
 
     The parameters are positional-only, so any two-argument callable satisfies
     this - a function, a bound method, a class's constructor.
@@ -306,33 +341,44 @@ class BoundBackend:
 def npu_unavailable_reason(capability: CapabilityReport) -> str | None:
     """Why the NPU cannot serve, or ``None`` where it can.
 
-    "Can" means either execution mode that reaches the hardware: ``IN_PROCESS``
-    runs it in this interpreter, and ``ISOLATED`` runs it in a separate one,
-    which requirement 5.1 provides precisely so that NPU embedding stays
-    available when the application's own environment cannot host it. Only
-    ``UNAVAILABLE`` means no route exists.
+    "Can" means a verdict `SERVABLE_EXECUTION_MODES` names, which is a claim
+    about the adapters that exist rather than about the hardware. ``ISOLATED``
+    reaches the hardware in principle and, with no isolated adapter built, is
+    unavailable in fact - so it gets a reason here rather than a ``None`` that
+    would send `resolve_backend` off to build something that cannot work
+    (task 5.4, defect 1).
 
     The string is built from the report's *unsatisfied conditions*, each of
     which carries its observed value, its requirement and its remediation by
     construction (`Condition`'s own invariant, requirement 1.3). That is what
     makes requirement 2.5's "specific reason" specific: "the NPU is unavailable"
-    would only repeat the verdict the caller can already see.
+    would only repeat the verdict the caller can already see. Under ``ISOLATED``
+    the conditions alone would be specific but *misleading* - they describe a
+    provisioning fault and say nothing about the isolation - so that verdict
+    also carries `_NO_ISOLATED_BACKEND` ahead of them.
 
-    It is never blank and never ``None`` for an unavailable NPU, including in
-    the odd case of an ``UNAVAILABLE`` verdict with every condition satisfied -
-    only ``IN_PROCESS`` is invariant-bound to a condition, so that report is
+    It is never blank and never ``None`` for an unusable NPU, including in the
+    odd case of a non-servable verdict with every condition satisfied - only
+    ``IN_PROCESS`` is invariant-bound to a condition, so that report is
     constructible, and requirement 2.5 has no "sometimes".
     """
-    if capability.execution_mode is not ExecutionMode.UNAVAILABLE:
+    mode = capability.execution_mode
+    if mode in SERVABLE_EXECUTION_MODES:
         return None
-    unmet = [c for c in capability.conditions if not c.satisfied]
-    if not unmet:
-        return (
-            f"NPU execution reported as {ExecutionMode.UNAVAILABLE.value} with "
-            "no unsatisfied condition to explain it; the capability report "
-            "names no route to the hardware"
-        )
-    return " | ".join(_describe(condition) for condition in unmet)
+    parts = [
+        _describe(condition)
+        for condition in capability.conditions
+        if not condition.satisfied
+    ]
+    if not parts:
+        parts = [
+            f"NPU execution reported as {mode.value} with no unsatisfied "
+            "condition to explain it; the capability report names no route to "
+            "the hardware"
+        ]
+    if mode is ExecutionMode.ISOLATED:
+        parts.insert(0, _NO_ISOLATED_BACKEND)
+    return " | ".join(parts)
 
 
 def _describe(condition: Condition) -> str:
@@ -367,6 +413,14 @@ def resolve_backend(
     - ``cpu`` is served by the CPU whatever the NPU is doing (2.3).
     - ``auto`` prefers the NPU where it is reachable (2.4) and otherwise reports
       the specific reason before falling back (2.5).
+
+    "Unusable" is `npu_unavailable_reason`'s verdict, and it covers an
+    ``ISOLATED`` environment because no isolated adapter exists to serve one.
+    That matters here rather than one layer down: the factories are called
+    *after* this decision, and the NPU factory's first act is a compile that
+    takes minutes. Deciding late would mean paying for it and then failing, and
+    requirement 1.4 says NPU execution must not be attempted at all with the
+    vendor runtime absent.
 
     The result is frozen, so the provider cannot change part-way through the
     operation it was resolved for (2.7).
