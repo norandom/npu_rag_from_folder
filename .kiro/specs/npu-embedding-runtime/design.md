@@ -152,7 +152,15 @@ docs/
 benchmarks/                             # Raw measurement output, one directory per run
 tests/fixtures/benchmark-corpus/
 ├── chunks.jsonl                        # Pre-extracted text sample, committed to the repo
-└── relevance.jsonl                     # Query set with pre-identified relevant chunk ids
+├── relevance.jsonl                     # Query set with pre-identified relevant chunk ids
+└── composition.json                    # Size, composition and excerpt policy (added by task 6.1)
+# Corrected 2026-09-07 after task 6.1: the sketch had two files. Requirement 6.5
+# says the sample's size and composition must be STATED, and task 6.7 must render
+# that into the benchmark document, so it has to be loadable data rather than
+# prose in a README. The record also carries policy - the excerpt cap, the
+# per-article ceiling, the allocation rule - which counting the chunks cannot
+# recover. The loader cross-checks every counted field against the chunks on each
+# read, so the record cannot drift from the data it describes.
 src/npu_rag/embedding/
 ├── __init__.py                         # Public surface, re-exports service and types only
 ├── types.py                            # TextKind, ProviderChoice, ExecutionMode, DocumentText, Condition, CapabilityReport
@@ -273,7 +281,7 @@ Staleness is decided by the sidecar manifest, not by file presence: a manifest r
 | 6.1, 6.2 | Model x provider matrix; throughput, latency, energy, memory, prep time | `bench/harness.py`, `bench/power.py` | `run_matrix() -> MatrixResult` | — |
 | 6.3 | NPU vs full-precision CPU vector similarity | `bench/fidelity.py`, `providers/cpu.py` | `compare_to_reference()` | — |
 | 6.4 | Retrieval quality on fixed query set | `bench/quality.py`, `tests/fixtures/benchmark-corpus/relevance.jsonl` | `score_retrieval()` | — |
-| 6.5 | Representative corpus sample, size and composition stated | `bench/harness.py`, `tests/fixtures/benchmark-corpus/chunks.jsonl` | `SampleSpec` | — |
+| 6.5 | Representative corpus sample, size and composition stated | `bench/corpus.py`, `tests/fixtures/benchmark-corpus/{chunks.jsonl,composition.json}` | `SampleComposition` | Corrected 2026-09-07 after task 6.1: was `bench/harness.py` / `SampleSpec`. `harness.py` belongs to task 6.3, and creating it at 6.1 would have handed 6.3 a file to merge. The fixture loader carries no run-shape logic, so it is its own module; `SampleSpec` stays unclaimed for 6.3. |
 | 6.6 | Hardware, driver, runtime versions recorded | `bench/harness.py`, `environment/capability.py` | `RunContext` | — |
 | 6.7 | Repetitions and observed variation reported | `bench/harness.py` | `MeasurementSeries` | — |
 | 6.8 | Unmeasurable values recorded as omissions, never estimated | `bench/power.py`, `bench/report.py` | `Measurement.unavailable_reason` | — |

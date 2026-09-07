@@ -49,9 +49,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: Where the Ryzen AI NuGet package was unpacked on the machine this recipe was
 #: verified on. A parameter with a default, never a constant: another machine
 #: will have unpacked it somewhere else.
-DEFAULT_NUGET_NATIVE_DIR = Path(
-    r"C:\Users\mariu\Downloads\ryzen_ai_nuget_1.8.0"
-    r"\RyzenAI_Deployment.1.8.0\runtimes\win-x64\native"
+#:
+#: Written relative to the user's home rather than as an absolute path: this
+#: repository is public, and the original literal carried the verifying machine's
+#: account name into every clone. Resolves to the same directory here.
+DEFAULT_NUGET_NATIVE_DIR = (
+    Path.home()
+    / "Downloads"
+    / "ryzen_ai_nuget_1.8.0"
+    / "RyzenAI_Deployment.1.8.0"
+    / "runtimes"
+    / "win-x64"
+    / "native"
 )
 
 #: The two files the AMD-index wheels do not ship. ``vaiml.dll`` is the BF16

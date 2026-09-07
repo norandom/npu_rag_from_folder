@@ -1,0 +1,35 @@
+{
+  "source": "archive - 3 Substack publications, markdown export, text only",
+  "generated_by": "tools/build_benchmark_corpus.py",
+  "sampling": "Articles are allocated to publications in proportion to their share of the archive, subject to a floor, then drawn at an even stride over the date-ordered filenames so the selection spans each publication's history. Within an article, chunks are taken from spread positions rather than from the opening. Selection is deterministic: no random number generator is involved.",
+  "excerpt_policy": "Third-party writing in a public repository: each chunk is capped at 500 characters and no article contributes more than 2 chunks, so no article is substantially reproduced. The cap does not affect throughput, latency, energy or memory, because the NPU graph is compiled at a static (batch_size, 512) and every input is padded to that length.",
+  "chunk_count": 200,
+  "article_count": 120,
+  "publication_count": 3,
+  "publications": [
+    "businessengineer.ai",
+    "nurijanian",
+    "quantbeckman.com"
+  ],
+  "chunks_per_publication": {
+    "businessengineer.ai": 115,
+    "nurijanian": 39,
+    "quantbeckman.com": 46
+  },
+  "articles_per_publication": {
+    "businessengineer.ai": 71,
+    "nurijanian": 24,
+    "quantbeckman.com": 25
+  },
+  "max_chunk_characters": 500,
+  "max_chunks_per_article": 2,
+  "observed_min_chunk_characters": 261,
+  "observed_max_chunk_characters": 500,
+  "observed_mean_chunk_characters": 343.9,
+  "observed_total_chunk_characters": 68772,
+  "observed_max_chunks_per_article": 2,
+  "query_count": 17,
+  "relevant_chunks_per_query_min": 3,
+  "relevant_chunks_per_query_max": 4,
+  "relevant_chunks_per_query_mean": 3.29
+}
