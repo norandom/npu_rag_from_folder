@@ -9,7 +9,7 @@ properties of the downloaded files and of nothing else.
 **Nothing here downloads weights.** Acquisition is restricted to the tokenizer
 files: roughly a megabyte for the two BERT-derived candidates and about forty
 for EmbeddingGemma's Gemma vocabulary, cached by the Hub thereafter. The
-candidates' ``model.safetensors`` are between 0.5 and 1.3 GB and are never
+candidates' ``model.safetensors`` are between 0.6 and 1.2 GB and are never
 fetched.
 
 The whole module skips when the Hub is unreachable, and the gated candidate
@@ -29,7 +29,7 @@ from npu_rag.embedding.profiles import PROFILES, ModelProfile, profile_for
 from npu_rag.embedding.tokenize import ModelTokenizer, load_tokenizer
 from npu_rag.embedding.types import DocumentText, TextKind
 
-OPEN = profile_for("bge-large-en-v1.5")
+OPEN = profile_for("gte-modernbert-base")
 
 #: Real prose, in the register of the archive this project indexes. Deliberately
 #: varied: a fragment, an ordinary paragraph, and one long enough that no
@@ -92,9 +92,14 @@ def test_every_candidate_publishes_its_compiled_length_and_a_pinned_identity(
     subject = _tokenizer(profile)
 
     assert subject.max_input_tokens == profile.compiled_seq_len
-    assert subject.max_input_tokens != profile.architectural_context_limit or (
-        profile.architectural_context_limit == profile.compiled_seq_len
-    )
+    # The escape clause this assertion used to carry - "unless the two numbers
+    # legitimately coincide" - existed for ``bge-large-en-v1.5`` alone and became
+    # dead the moment task 5.5 replaced it. Every current candidate attends more
+    # than it was compiled at, so the check is unconditional again; a future
+    # candidate where they coincide would fail here, loudly, which is the right
+    # place to reconsider it rather than a branch nothing reaches.
+    assert profile.compiled_seq_len < profile.architectural_context_limit
+    assert subject.max_input_tokens != profile.architectural_context_limit
     repository, _, revision = subject.tokenizer_id.partition("@")
     assert repository == profile.model_id
     assert len(revision) == 40
@@ -177,13 +182,29 @@ def test_a_query_and_a_document_of_the_same_text_measure_by_their_own_rules(
             verbose=False,
         )
     )
-    # The two conventions render different text. Whether they happen to cost
-    # the same number of tokens is a property of the vocabulary - nomic's
-    # `search_document: ` and `search_query: ` tokenize to equal lengths - so
-    # the counts are compared to their own references, never to each other.
-    assert profile.render_query(text) != profile.render_document(
-        DocumentText(text)
-    )
+    # Each count is compared to its own independent reference above, never to
+    # the other. Whether the two conventions cost the same number of tokens is a
+    # property of the vocabulary - nomic's `search_document: ` and
+    # `search_query: ` tokenize to equal lengths - so an inequality assertion on
+    # the counts would be wrong (Implementation Note 5.1).
+    #
+    # The renderings themselves were once asserted to differ, which held while
+    # every candidate decorated at least one side. ``gte-modernbert-base`` is
+    # symmetric: both its templates are the identity, so its two renderings are
+    # legitimately *equal*. What is actually true for every model is that the
+    # renderings differ exactly when the templates do, so that is what is
+    # asserted - which still catches a runtime that applied one convention to
+    # both kinds, the defect the original assertion was reaching for.
+    same_convention = profile.document_template == profile.query_template
+    assert (
+        profile.render_query(text) == profile.render_document(DocumentText(text))
+    ) is same_convention
+    # That biconditional would pass trivially if every candidate fell on the
+    # same side of it. The lineup spans both, which is asserted where no network
+    # is needed and nothing can skip it - `test_profiles.py`,
+    # ``test_the_lineup_spans_both_a_symmetric_and_an_asymmetric_convention``
+    # (Implementation Note 4.2: a gap covered only by a live test is not
+    # covered).
 
 
 @pytest.mark.parametrize("name", sorted(PROFILES))

@@ -70,7 +70,7 @@ MODULE_PACKAGE = "npu_rag.embedding.models"
 LAYERS_RIGHT_OF_MODELS = ("providers", "service", "bench")
 
 GEMMA = profile_for("embeddinggemma-300m")
-BGE = profile_for("bge-large-en-v1.5")
+GTE = profile_for("gte-modernbert-base")
 
 REVISION = "0" * 40
 
@@ -382,16 +382,16 @@ def test_export_writes_the_graph_and_reports_where_it_landed(
     exporter = FakeExporter()
 
     result = export_model(
-        BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+        GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
     )
 
     assert isinstance(result, ExportedModel)
     assert result.onnx_path == destination / ONNX_FILENAME
     assert result.onnx_path.is_file()
-    assert result.model_id == BGE.model_id
+    assert result.model_id == GTE.model_id
     assert result.revision == REVISION
-    assert result.batch_size == BGE.batch_size
-    assert result.compiled_seq_len == BGE.compiled_seq_len
+    assert result.batch_size == GTE.batch_size
+    assert result.compiled_seq_len == GTE.compiled_seq_len
 
 
 def test_the_graph_is_exported_at_the_profiles_compiled_length_and_batch(
@@ -399,9 +399,11 @@ def test_the_graph_is_exported_at_the_profiles_compiled_length_and_batch(
 ) -> None:
     """The compiled length is the profile's, not the architectural limit.
 
-    ``bge-large-en-v1.5`` is the one candidate whose two numbers coincide, so
-    the assertion is made against EmbeddingGemma, where 512 and 2048 differ and
-    reading the wrong field is a live possibility.
+    The assertion is made against EmbeddingGemma, where 512 and 2048 differ by
+    a factor of four and reading the wrong field is a live possibility. (Until
+    task 5.5 the third candidate was ``bge-large-en-v1.5``, whose two numbers
+    coincided at 512; ``gte-modernbert-base`` compiles at 512 out of 8192, so
+    every candidate now discriminates.)
     """
     exporter = FakeExporter(
         stages=[dense_stage("2_Dense", 768, 3072), dense_stage("3_Dense", 3072, 768)],
@@ -426,7 +428,7 @@ def test_the_published_graph_declares_exactly_the_profiles_shape(
     import onnxruntime as ort  # type: ignore[import-untyped]
 
     export_model(
-        BGE, acquired_for(BGE, source_dir), destination, exporter=FakeExporter()
+        GTE, acquired_for(GTE, source_dir), destination, exporter=FakeExporter()
     )
 
     session = ort.InferenceSession(
@@ -434,8 +436,8 @@ def test_the_published_graph_declares_exactly_the_profiles_shape(
     )
     shapes = {i.name: i.shape for i in session.get_inputs()}
     assert shapes == {
-        INPUT_IDS: [BGE.batch_size, BGE.compiled_seq_len],
-        ATTENTION_MASK: [BGE.batch_size, BGE.compiled_seq_len],
+        INPUT_IDS: [GTE.batch_size, GTE.compiled_seq_len],
+        ATTENTION_MASK: [GTE.batch_size, GTE.compiled_seq_len],
     }
 
 
@@ -448,19 +450,19 @@ def test_the_published_graph_rejects_any_other_shape(
     import onnxruntime as ort
 
     export_model(
-        BGE, acquired_for(BGE, source_dir), destination, exporter=FakeExporter()
+        GTE, acquired_for(GTE, source_dir), destination, exporter=FakeExporter()
     )
     session = ort.InferenceSession(
         str(destination / ONNX_FILENAME), providers=["CPUExecutionProvider"]
     )
-    wrong = BGE.compiled_seq_len // 2
+    wrong = GTE.compiled_seq_len // 2
 
     with pytest.raises(Exception) as caught:
         session.run(
             None,
             {
-                INPUT_IDS: np.zeros((BGE.batch_size, wrong), dtype=np.int64),
-                ATTENTION_MASK: np.ones((BGE.batch_size, wrong), dtype=np.int64),
+                INPUT_IDS: np.zeros((GTE.batch_size, wrong), dtype=np.int64),
+                ATTENTION_MASK: np.ones((GTE.batch_size, wrong), dtype=np.int64),
             },
         )
 
@@ -493,11 +495,11 @@ def test_a_graph_whose_shape_is_not_the_profiles_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
-    assert caught.value.model_id == BGE.model_id
+    assert caught.value.model_id == GTE.model_id
     assert expected in str(caught.value)
     # The *input* is what was wrong, and the report has to say so. Without this
     # the output-shape check downstream would mask a deleted input check: both
@@ -517,7 +519,7 @@ def test_a_graph_missing_an_expected_input_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -539,7 +541,7 @@ def test_a_graph_taking_an_input_the_backend_will_not_supply_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -558,7 +560,7 @@ def test_a_graph_carrying_reduced_precision_weights_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -573,7 +575,7 @@ def test_a_graph_that_does_not_emit_float32_token_embeddings_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -596,7 +598,7 @@ def test_a_graph_emitting_more_than_the_trunks_one_output_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -613,7 +615,7 @@ def test_a_graph_whose_single_output_is_misnamed_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -632,11 +634,11 @@ def test_a_graph_onnx_runtime_cannot_load_is_refused(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
-    assert caught.value.model_id == BGE.model_id
+    assert caught.value.model_id == GTE.model_id
     assert "ONNX Runtime" in str(caught.value)
     assert not (destination / ONNX_FILENAME).exists()
 
@@ -647,7 +649,7 @@ def test_the_hidden_size_is_read_from_the_exported_graph(
     exporter = FakeExporter(graph={"hidden": 17})
 
     result = export_model(
-        BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+        GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
     )
 
     assert result.hidden_size == 17
@@ -709,7 +711,7 @@ def test_the_persisted_dense_order_is_the_pipeline_order_not_a_set(
     """
     stages = [dense_stage("z_first", 4, 6), dense_stage("a_second", 6, 4)]
     exporter = FakeExporter(stages=stages, graph={"hidden": 4})
-    profile = _profile_with(BGE, has_dense_stage=True, dimension=4)
+    profile = _profile_with(GTE, has_dense_stage=True, dimension=4)
 
     result = export_model(
         profile, acquired_for(profile, source_dir), destination, exporter=exporter
@@ -745,7 +747,7 @@ def test_a_bias_and_activation_survive_the_round_trip(
         bias=np.arange(4, dtype=np.float32),
         activation="torch.nn.modules.activation.Tanh",
     )
-    profile = _profile_with(BGE, has_dense_stage=True, dimension=4)
+    profile = _profile_with(GTE, has_dense_stage=True, dimension=4)
 
     result = export_model(
         profile,
@@ -812,7 +814,7 @@ def test_a_profile_declaring_no_dense_stage_whose_model_has_one_fails(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
@@ -824,7 +826,7 @@ def test_no_dense_file_is_written_for_a_profile_without_the_stage(
     source_dir: Path, destination: Path
 ) -> None:
     result = export_model(
-        BGE, acquired_for(BGE, source_dir), destination, exporter=FakeExporter()
+        GTE, acquired_for(GTE, source_dir), destination, exporter=FakeExporter()
     )
 
     assert result.dense_path is None
@@ -848,10 +850,10 @@ def test_a_stale_dense_file_left_by_an_earlier_run_is_not_claimed(
     stale.write_bytes(b"weights from some earlier run")
 
     result = export_model(
-        BGE, acquired_for(BGE, source_dir), destination, exporter=FakeExporter()
+        GTE, acquired_for(GTE, source_dir), destination, exporter=FakeExporter()
     )
 
-    # BGE declares no dense stage, so this export produced none - whatever the
+    # GTE declares no dense stage, so this export produced none - whatever the
     # directory happened to contain already.
     assert result.dense_path is None
     # The stale file is not this task's to delete (task 3.3 owns artifact
@@ -930,7 +932,7 @@ def test_exporting_a_model_other_than_the_one_requested_is_refused(
     made here, where the profile says one model and the acquired files are
     another's."""
     mismatched = AcquiredModel(
-        model_id=BGE.model_id, revision=REVISION, local_path=source_dir
+        model_id=GTE.model_id, revision=REVISION, local_path=source_dir
     )
     exporter = FakeExporter()
 
@@ -939,7 +941,7 @@ def test_exporting_a_model_other_than_the_one_requested_is_refused(
 
     assert caught.value.stage == EXPORT_STAGE
     assert GEMMA.model_id in str(caught.value)
-    assert BGE.model_id in str(caught.value)
+    assert GTE.model_id in str(caught.value)
     assert exporter.graph_calls == []
     assert not destination.exists() or list(destination.iterdir()) == []
 
@@ -1002,11 +1004,11 @@ def test_an_arbitrary_exporter_failure_is_reported_as_the_export_stage(
 
     with pytest.raises(PreparationError) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value.stage == EXPORT_STAGE
-    assert caught.value.model_id == BGE.model_id
+    assert caught.value.model_id == GTE.model_id
     assert "no kernel for gelu" in str(caught.value)
     assert "RuntimeError" in str(caught.value)
     # ``from None``: a chained cause would print the raw traceback beneath the
@@ -1022,7 +1024,7 @@ def test_a_failure_names_which_step_of_the_export_it_was(
 
     with pytest.raises(PreparationError) as first:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=graph_failure
+            GTE, acquired_for(GTE, source_dir), destination, exporter=graph_failure
         )
     with pytest.raises(PreparationError) as second:
         export_model(
@@ -1045,13 +1047,13 @@ def test_an_already_diagnosed_failure_passes_through_unchanged(
     original = LicenseAcceptanceRequired(
         "terms not accepted",
         acceptance_url="https://example.invalid",
-        model_id=BGE.model_id,
+        model_id=GTE.model_id,
     )
     exporter = FakeExporter(graph_error=original)
 
     with pytest.raises(LicenseAcceptanceRequired) as caught:
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert caught.value is original
@@ -1069,7 +1071,7 @@ def test_every_ordinary_failure_is_one_of_this_features_errors(
 
     with pytest.raises(EmbeddingRuntimeError):
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
 
@@ -1085,7 +1087,7 @@ def test_an_interrupt_is_not_dressed_up_as_a_preparation_failure(
 
     with pytest.raises(KeyboardInterrupt):
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert list(destination.iterdir()) == []
@@ -1102,7 +1104,7 @@ def test_a_partially_written_graph_is_never_published(
 
     with pytest.raises(PreparationError):
         export_model(
-            BGE, acquired_for(BGE, source_dir), destination, exporter=exporter
+            GTE, acquired_for(GTE, source_dir), destination, exporter=exporter
         )
 
     assert not (destination / ONNX_FILENAME).exists()
@@ -1123,15 +1125,15 @@ def test_progress_is_reported_as_a_callback(
     seen: list[ProgressUpdate] = []
 
     export_model(
-        BGE,
-        acquired_for(BGE, source_dir),
+        GTE,
+        acquired_for(GTE, source_dir),
         destination,
         exporter=FakeExporter(),
         progress=seen.append,
     )
 
     assert seen != []
-    assert all(update.operation.endswith(BGE.name) for update in seen)
+    assert all(update.operation.endswith(GTE.name) for update in seen)
     assert [u.completed for u in seen] == sorted(u.completed for u in seen)
     assert seen[0].completed == 0
     assert seen[-1].completed == seen[-1].total

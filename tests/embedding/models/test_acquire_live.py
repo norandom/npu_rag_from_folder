@@ -4,8 +4,8 @@ These are the real-network half of the evidence. They skip wholesale when the
 Hub is unreachable, so the suite stays green offline - the unit tests in
 ``test_acquire.py`` cover the same logic against an injected client.
 
-**Nothing here downloads model weights.** ``bge-large-en-v1.5`` is roughly
-1.3 GB and EmbeddingGemma roughly 1.2 GB; every test below either makes a
+**Nothing here downloads model weights.** ``gte-modernbert-base``'s repository
+is roughly 2.5 GB and EmbeddingGemma roughly 1.2 GB; every test below either makes a
 metadata-only call or restricts the download to ``config.json``, a few kilobytes
 that the Hub cache then serves for free on subsequent runs.
 
@@ -34,7 +34,7 @@ from npu_rag.embedding.models.acquire import (
 from npu_rag.embedding.profiles import profile_for
 
 GATED = profile_for("embeddinggemma-300m")
-OPEN = profile_for("bge-large-en-v1.5")
+OPEN = profile_for("gte-modernbert-base")
 
 #: A few kilobytes. Never the weights.
 METADATA_ONLY = ["config.json"]

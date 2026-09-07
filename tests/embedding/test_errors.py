@@ -200,14 +200,14 @@ def test_every_error_reports_its_context_in_its_message(name: str) -> None:
         make(
             error_type(name),
             provider=ProviderChoice.CPU,
-            model_id="bge-large-en-v1.5",
+            model_id="gte-modernbert-base",
             stage="session_run",
         )
     )
 
     assert "something went wrong" in rendered
     assert "cpu" in rendered
-    assert "bge-large-en-v1.5" in rendered
+    assert "gte-modernbert-base" in rendered
     assert "session_run" in rendered
 
 

@@ -173,7 +173,7 @@ src/npu_rag/embedding/
 │   ├── isolated.py                     # Client side of the isolated adapter, framing protocol
 │   └── worker.py                       # Worker entry point, runs under the vendor interpreter
 ├── tokenize.py                         # Tokenizer exposure and length measurement contract
-├── postprocess.py                      # Masked mean pooling, Dense stage, L2 normalization
+├── postprocess.py                      # Pooling (mean or CLS, per profile), Dense stage, L2 normalization
 ├── service.py                          # EmbeddingService, the port
 └── bench/
     ├── harness.py                      # Orchestrates model x provider matrix, repetitions, variance
@@ -583,7 +583,10 @@ class ModelProfile:
     dimension: int
     compiled_seq_len: int        # 512 by default; the value published as max_input_tokens
     batch_size: int
-    pooling: Literal["mean"]
+    pooling: Literal["mean", "cls"]  # Corrected 2026-09-07 after task 5.5: requirement 4.1's
+                                     # amendment adds gte-modernbert-base, which pools by CLS.
+                                     # `postprocess.pool` dispatches on this field and refuses a
+                                     # rule it does not implement; before 5.5 nothing read it.
     has_dense_stage: bool
     architectural_context_limit: int  # the model's own limit; deliberately NOT what 3.6 publishes
     document_template: str       # e.g. 'title: {title} | text: {content}'

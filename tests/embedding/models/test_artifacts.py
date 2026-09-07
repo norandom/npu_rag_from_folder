@@ -89,7 +89,7 @@ MODULE_PACKAGE = "npu_rag.embedding.models"
 LAYERS_RIGHT_OF_MODELS = ("providers", "service", "bench")
 
 GEMMA = profile_for("embeddinggemma-300m")
-BGE = profile_for("bge-large-en-v1.5")
+GTE = profile_for("gte-modernbert-base")
 
 REVISION = "a" * 40
 OTHER_REVISION = "b" * 40
@@ -329,7 +329,7 @@ def prepare(
     root: Path,
     source: Path,
     *,
-    profile: ModelProfile = BGE,
+    profile: ModelProfile = GTE,
     provider: ProviderChoice = ProviderChoice.NPU,
     toolchain: Toolchain = TOOLCHAIN,
     acquirer: FakeAcquirer | None = None,
@@ -361,11 +361,11 @@ def test_preparation_lands_in_the_directory_the_physical_data_model_prescribes(
 ) -> None:
     result = prepare(root, source_dir)
 
-    expected = artifact_directory(root, BGE, ProviderChoice.NPU)
+    expected = artifact_directory(root, GTE, ProviderChoice.NPU)
     assert result.directory == expected
     assert expected.parent.name == ProviderChoice.NPU.value
-    assert expected.name == str(BGE.compiled_seq_len)
-    assert expected.parent.parent.name == "BAAI--bge-large-en-v1.5"
+    assert expected.name == str(GTE.compiled_seq_len)
+    assert expected.parent.parent.name == "Alibaba-NLP--gte-modernbert-base"
 
 
 def test_preparation_persists_the_graph_the_context_and_the_manifest(
@@ -394,7 +394,7 @@ def test_dense_weights_are_carried_into_the_prepared_directory(
 def test_no_dense_file_is_published_for_a_profile_without_the_stage(
     root: Path, source_dir: Path
 ) -> None:
-    result = prepare(root, source_dir, profile=BGE)
+    result = prepare(root, source_dir, profile=GTE)
 
     assert result.dense_path is None
     assert not (result.directory / DENSE_FILENAME).exists()
@@ -439,7 +439,7 @@ def test_the_manifest_records_the_model_identity_and_its_revision(
     result = prepare(root, source_dir)
 
     stored = json.loads((result.directory / MANIFEST_FILENAME).read_text("utf-8"))
-    assert stored["identity"]["model_id"] == BGE.model_id
+    assert stored["identity"]["model_id"] == GTE.model_id
     assert stored["identity"]["revision"] == REVISION
 
 
@@ -449,8 +449,8 @@ def test_the_manifest_records_the_compiled_shape_the_provider_and_the_toolchain(
     result = prepare(root, source_dir)
 
     identity = result.manifest.identity
-    assert identity.compiled_seq_len == BGE.compiled_seq_len
-    assert identity.batch_size == BGE.batch_size
+    assert identity.compiled_seq_len == GTE.compiled_seq_len
+    assert identity.batch_size == GTE.batch_size
     assert identity.provider == ProviderChoice.NPU.value
     assert identity.onnxruntime_version == TOOLCHAIN.onnxruntime_version
     assert identity.ryzen_ai_version == TOOLCHAIN.ryzen_ai_version
@@ -680,9 +680,9 @@ def test_a_different_provider_prepares_into_its_own_directory(
 def test_a_different_compiled_length_prepares_into_its_own_directory(
     root: Path, source_dir: Path
 ) -> None:
-    shorter = dataclasses.replace(BGE, compiled_seq_len=256)
+    shorter = dataclasses.replace(GTE, compiled_seq_len=256)
 
-    first = prepare(root, source_dir, profile=BGE)
+    first = prepare(root, source_dir, profile=GTE)
     second = prepare(root, source_dir, profile=shorter)
 
     assert second.reused is False
@@ -769,11 +769,11 @@ def test_a_dense_file_the_profile_requires_but_the_directory_lacks_is_not_reused
 
 def identity(**changes: Any) -> ArtifactIdentity:
     base = {
-        "model_id": BGE.model_id,
+        "model_id": GTE.model_id,
         "revision": REVISION,
         "provider": ProviderChoice.NPU.value,
-        "compiled_seq_len": BGE.compiled_seq_len,
-        "batch_size": BGE.batch_size,
+        "compiled_seq_len": GTE.compiled_seq_len,
+        "batch_size": GTE.batch_size,
         "onnxruntime_version": TOOLCHAIN.onnxruntime_version,
         "ryzen_ai_version": TOOLCHAIN.ryzen_ai_version,
         "driver_version": TOOLCHAIN.driver_version,
@@ -823,7 +823,7 @@ def test_a_failed_compilation_publishes_nothing(
             compiler=FakeCompiler(error=RuntimeError("the compiler died")),
         )
 
-    assert not artifact_directory(root, BGE, ProviderChoice.NPU).exists()
+    assert not artifact_directory(root, GTE, ProviderChoice.NPU).exists()
 
 
 def test_a_failed_compilation_leaves_no_temporary_directory_behind(
@@ -865,7 +865,7 @@ def test_a_compiler_that_writes_no_context_has_not_compiled_anything(
         prepare(root, source_dir, compiler=FakeCompiler(produces=False))
 
     assert caught.value.stage == COMPILE_STAGE
-    assert not artifact_directory(root, BGE, ProviderChoice.NPU).exists()
+    assert not artifact_directory(root, GTE, ProviderChoice.NPU).exists()
 
 
 def test_an_earlier_valid_artifact_survives_a_failed_rebuild(
@@ -939,7 +939,7 @@ def test_a_leftover_temporary_directory_is_never_accepted_as_prepared(
 def test_a_stale_temporary_directory_is_swept_away_by_the_next_run(
     root: Path, source_dir: Path
 ) -> None:
-    directory = artifact_directory(root, BGE, ProviderChoice.NPU)
+    directory = artifact_directory(root, GTE, ProviderChoice.NPU)
     partial = directory.parent / f"{directory.name}.partial"
     partial.mkdir(parents=True)
     (partial / "junk.bin").write_bytes(b"left by a killed run")
@@ -1017,7 +1017,7 @@ KILLED_CHILD = textwrap.dedent(
 
 
     ensure_prepared(
-        profile_for("bge-large-en-v1.5"),
+        profile_for("gte-modernbert-base"),
         ProviderChoice.NPU,
         root,
         toolchain=Toolchain(
@@ -1067,7 +1067,7 @@ def test_a_run_killed_mid_preparation_leaves_nothing_a_later_run_accepts(
         child.kill()
         child.wait(timeout=30)
 
-    directory = artifact_directory(root, BGE, ProviderChoice.NPU)
+    directory = artifact_directory(root, GTE, ProviderChoice.NPU)
     assert not (directory / MANIFEST_FILENAME).exists()
 
     weights = tmp_path / "weights-after-the-kill"
@@ -1093,7 +1093,7 @@ def test_a_compilation_failure_names_the_compile_stage(
         prepare(root, source_dir, compiler=FakeCompiler(error=OSError("boom")))
 
     assert caught.value.stage == COMPILE_STAGE
-    assert caught.value.model_id == BGE.model_id
+    assert caught.value.model_id == GTE.model_id
     assert caught.value.provider == ProviderChoice.NPU
 
 
@@ -1146,7 +1146,7 @@ def test_an_interrupt_is_not_dressed_up_as_a_preparation_failure(
     with pytest.raises(KeyboardInterrupt):
         prepare(root, source_dir, compiler=FakeCompiler(error=KeyboardInterrupt()))
 
-    assert not artifact_directory(root, BGE, ProviderChoice.NPU).exists()
+    assert not artifact_directory(root, GTE, ProviderChoice.NPU).exists()
 
 
 def test_preparation_never_substitutes_another_provider(
@@ -1157,7 +1157,7 @@ def test_preparation_never_substitutes_another_provider(
     with pytest.raises(PreparationError):
         prepare(root, source_dir, compiler=FakeCompiler(error=RuntimeError("no")))
 
-    assert not artifact_directory(root, BGE, ProviderChoice.CPU).exists()
+    assert not artifact_directory(root, GTE, ProviderChoice.CPU).exists()
 
 
 def test_a_model_other_than_the_one_requested_is_refused(
@@ -1177,10 +1177,10 @@ def test_a_model_other_than_the_one_requested_is_refused(
             )
 
     with pytest.raises(PreparationError) as caught:
-        prepare(root, source_dir, profile=BGE, acquirer=WrongModel(source_dir))
+        prepare(root, source_dir, profile=GTE, acquirer=WrongModel(source_dir))
 
-    assert BGE.model_id in str(caught.value)
-    assert not artifact_directory(root, BGE, ProviderChoice.NPU).exists()
+    assert GTE.model_id in str(caught.value)
+    assert not artifact_directory(root, GTE, ProviderChoice.NPU).exists()
     assert acquirer.calls == []
 
 
@@ -1208,7 +1208,7 @@ def test_a_pinned_revision_is_what_the_repository_is_actually_asked_for(
 
     prepare(root, source_dir, acquirer=acquirer, revision=REVISION)
 
-    assert acquirer.calls == [(BGE.model_id, REVISION)]
+    assert acquirer.calls == [(GTE.model_id, REVISION)]
 
 
 def test_an_unpinned_preparation_asks_the_repository_for_no_particular_commit(
@@ -1218,7 +1218,7 @@ def test_an_unpinned_preparation_asks_the_repository_for_no_particular_commit(
 
     prepare(root, source_dir, acquirer=acquirer, revision=None)
 
-    assert acquirer.calls == [(BGE.model_id, None)]
+    assert acquirer.calls == [(GTE.model_id, None)]
 
 
 def test_a_revision_other_than_the_one_pinned_is_refused(
@@ -1230,7 +1230,7 @@ def test_a_revision_other_than_the_one_pinned_is_refused(
         prepare(root, source_dir, acquirer=IgnoringRevisionAcquirer(source_dir))
 
     assert OTHER_REVISION in str(caught.value)
-    assert not artifact_directory(root, BGE, ProviderChoice.NPU).exists()
+    assert not artifact_directory(root, GTE, ProviderChoice.NPU).exists()
 
 
 # --------------------------------------------------------------------------
@@ -1248,7 +1248,7 @@ def test_progress_is_reported_as_a_callback(root: Path, source_dir: Path) -> Non
         update.completed for update in seen
     )
     assert seen[-1].completed == seen[-1].total
-    assert all(update.operation == f"prepare:{BGE.name}" for update in seen)
+    assert all(update.operation == f"prepare:{GTE.name}" for update in seen)
 
 
 def test_a_reused_preparation_still_reports_completion(

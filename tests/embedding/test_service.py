@@ -24,6 +24,7 @@ selection, title rendering and truncation all invisible at once.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -530,6 +531,104 @@ def test_every_returned_vector_is_unit_norm() -> None:
         rtol=1e-6,
         atol=1e-6,
     )
+
+
+# --------------------------------------------------------------------------
+# Pooling comes from the active profile (4.1, task 5.5)
+#
+# Implementation Note 5.4: "a fixture can be non-vacuous against a system that
+# was never assembled that way". `postprocess`'s own tests prove the CLS branch
+# computes the right thing; only this proves the assembled service actually
+# reaches it, because `ModelProfile.pooling` spent tasks 2.2 to 5.4 with no
+# production consumer at all and a widened annotation alone would change
+# nothing.
+# --------------------------------------------------------------------------
+
+#: A profile identical to `PROFILE` in every respect except the pooling rule, so
+#: the only thing that can move the vectors is the rule itself.
+CLS_PROFILE = dataclasses.replace(PROFILE, pooling="cls")
+
+
+def _expected_from_first_position(
+    token_ids: npt.NDArray[np.int64], width: int
+) -> list[list[float]]:
+    """CLS-pooled, normalized vectors, computed without the module under test.
+
+    `FakeBackend` returns ``token_ids[b, t] + h``, so the first position of row
+    ``b`` is ``[id, id+1, ...]``. Plain Python arithmetic on the ids the backend
+    was actually handed - no NumPy reduction and nothing from ``postprocess``,
+    so a shared mistake cannot survive in both (Implementation Note 5.1).
+    """
+    rows: list[list[float]] = []
+    for row in token_ids.tolist():
+        raw = [float(row[0]) + h for h in range(width)]
+        length = math.sqrt(sum(value * value for value in raw))
+        rows.append([value / length for value in raw])
+    return rows
+
+
+def test_the_service_pools_by_the_rule_the_active_profile_declares() -> None:
+    backend = FakeBackend(ProviderChoice.CPU)
+
+    result = service(cpu=backend, profile=CLS_PROFILE).embed_documents(
+        documents(*SAMPLE[:3]), ProviderChoice.CPU
+    )
+
+    token_ids = backend.calls[0][0]
+    np.testing.assert_allclose(
+        result.vectors,
+        _expected_from_first_position(token_ids, CLS_PROFILE.dimension),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_the_same_texts_embed_differently_under_the_two_pooling_rules() -> None:
+    """Non-vacuity for the test above, and the sharpest assertion here.
+
+    Both services differ in exactly one field. If the service ignored
+    ``profile.pooling`` - which is what it did until task 5.5 - both would
+    return the mean-pooled vectors and the test above would still pass, because
+    the CLS reference would simply be wrong in a way nothing compared it to.
+    Both results are unit-norm and the same shape, so only the numbers differ.
+    """
+    by_cls = service(profile=CLS_PROFILE).embed_documents(
+        documents(*SAMPLE[:3]), ProviderChoice.CPU
+    )
+    by_mean = service(profile=PROFILE).embed_documents(
+        documents(*SAMPLE[:3]), ProviderChoice.CPU
+    )
+
+    assert by_cls.vectors.shape == by_mean.vectors.shape
+    assert not np.allclose(by_cls.vectors, by_mean.vectors)
+    for row in range(by_cls.vectors.shape[0]):
+        assert not np.allclose(by_cls.vectors[row], by_mean.vectors[row]), (
+            f"row {row}'s first token must not coincide with its mean token, "
+            "or that row cannot tell the two rules apart"
+        )
+
+
+def test_a_profile_declaring_an_unimplemented_rule_fails_rather_than_guesses() -> (
+    None
+):
+    """Requirement 4.6's spirit at the pooling seam: no silent substitution.
+
+    The refusal happens where the vectors would be produced, so it carries the
+    provider and the model requirement 8.1 asks for.
+    """
+    unimplemented = dataclasses.replace(
+        PROFILE,
+        pooling="lasttoken",  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ExecutionError) as caught:
+        service(profile=unimplemented).embed_documents(
+            documents(*SAMPLE[:3]), ProviderChoice.CPU
+        )
+
+    assert "lasttoken" in str(caught.value)
+    assert caught.value.model_id == PROFILE.model_id
+    assert caught.value.provider is ProviderChoice.CPU
 
 
 # --------------------------------------------------------------------------

@@ -1,12 +1,18 @@
 """The three candidate model profiles, as data (task 2.2).
 
 Requirement 4.1 names exactly three candidates - ``embeddinggemma-300m``,
-``bge-large-en-v1.5`` and ``nomic-embed-text-v1.5`` - and requirement 4.2 makes
+``nomic-embed-text-v1.5`` and ``gte-modernbert-base`` - and requirement 4.2 makes
 the first of them the *initial* default, held only until the benchmark document
 supersedes that choice on measured evidence. This module is where each model's
 behaviour is declared rather than coded: design.md's simplification note is
 explicit that there is "no model registry, plugin discovery, or configuration
 DSL. Three profiles in a module-level mapping."
+
+The third slot held ``bge-large-en-v1.5`` until requirement 4.1 was amended on
+2026-09-06 and task 5.5 carried the amendment into the code. The replacement is
+the first candidate whose sentence pipeline is not masked mean pooling, which is
+why ``pooling`` stopped being a one-value annotation and started being a value
+`postprocess.finalize` is actually handed.
 
 **The one number that must not be confused with another.** A model's
 architectural context limit and the length its graph was actually compiled at
@@ -93,9 +99,15 @@ class ModelProfile:
     architectural_context_limit: int
     #: Inputs per forward pass, fixed at export alongside the sequence length.
     batch_size: int
-    #: How token embeddings collapse to one vector. Masked mean pooling for all
-    #: three candidates; the annotation is the constraint.
-    pooling: Literal["mean"]
+    #: How token embeddings collapse to one vector, spelled the way
+    #: `postprocess.POOLING_RULES` spells it. Two candidates pool by masked mean
+    #: and ``gte-modernbert-base`` pools by CLS, which is not a variation on the
+    #: mean but a different vector entirely - and one of the same width carrying
+    #: the same norm, so nothing downstream can see the difference. The
+    #: annotation is the constraint, but only the annotation: it is
+    #: `postprocess.finalize` that must be *given* this value, because a
+    #: declaration nobody reads is how this field spent tasks 2.2 through 5.4.
+    pooling: Literal["mean", "cls"]
     #: Whether the sentence pipeline has a Dense projection between pooling and
     #: normalization. EmbeddingGemma does, and skipping it produces vectors of
     #: the right shape and the right norm that are semantically wrong - a defect
@@ -233,23 +245,27 @@ _EMBEDDINGGEMMA_300M = ModelProfile(
     license_acceptance_url="https://huggingface.co/google/embeddinggemma-300m",
 )
 
-_BGE_LARGE_EN_V1_5 = ModelProfile(
-    model_id="BAAI/bge-large-en-v1.5",
-    dimension=1024,
+_GTE_MODERNBERT_BASE = ModelProfile(
+    model_id="Alibaba-NLP/gte-modernbert-base",
+    dimension=768,
     compiled_seq_len=DEFAULT_COMPILED_SEQ_LEN,
-    # The one candidate whose architectural limit and compiled length coincide.
-    # They are still two facts: this profile publishes 512 because it compiled
-    # at 512, not because the model stops there.
-    architectural_context_limit=512,
+    # ModernBERT, 8192 tokens - sixteen times what the graph is compiled at.
+    architectural_context_limit=8192,
     batch_size=1,
-    pooling="mean",
+    # The one candidate that does not pool by mean. Read from the model's own
+    # `1_Pooling/config.json`, which sets `pooling_mode_cls_token` true and
+    # every other mode false.
+    pooling="cls",
+    # `modules.json` declares Transformer -> Pooling and nothing else.
     has_dense_stage=False,
-    # Asymmetric the other way round: the instruction goes on the query, and
-    # documents are embedded bare.
+    # **Symmetric.** `config_sentence_transformers.json` carries `"prompts": {}`
+    # and a null `default_prompt_name`: this model publishes no instruction for
+    # either side, so both conventions are the identity. That is a quoted
+    # convention like any other, not an omission - inventing a prefix here
+    # would embed text the model was never trained to see.
     document_template="{content}",
-    query_template=(
-        "Represent this sentence for searching relevant passages: {content}"
-    ),
+    query_template="{content}",
+    # Apache-2.0, and ungated: fetchable with no credential at all.
     license_gated=False,
 )
 
@@ -270,8 +286,8 @@ _NOMIC_EMBED_TEXT_V1_5 = ModelProfile(
 PROFILES: Mapping[str, ModelProfile] = MappingProxyType(
     {
         "embeddinggemma-300m": _EMBEDDINGGEMMA_300M,
-        "bge-large-en-v1.5": _BGE_LARGE_EN_V1_5,
         "nomic-embed-text-v1.5": _NOMIC_EMBED_TEXT_V1_5,
+        "gte-modernbert-base": _GTE_MODERNBERT_BASE,
     }
 )
 

@@ -23,9 +23,11 @@ from __future__ import annotations
 import ast
 import dataclasses
 from pathlib import Path
+from typing import get_args, get_type_hints
 
 import pytest
 
+from npu_rag.embedding.postprocess import POOLING_RULES
 from npu_rag.embedding.profiles import (
     MISSING_TITLE_SENTINEL,
     PROFILES,
@@ -44,11 +46,17 @@ MODULE_PATH = (
     / "profiles.py"
 )
 
-ALL_NAMES = ("embeddinggemma-300m", "bge-large-en-v1.5", "nomic-embed-text-v1.5")
+ALL_NAMES = (
+    "embeddinggemma-300m",
+    "nomic-embed-text-v1.5",
+    "gte-modernbert-base",
+)
 
 GEMMA = "embeddinggemma-300m"
-BGE = "bge-large-en-v1.5"
 NOMIC = "nomic-embed-text-v1.5"
+#: Requirement 4.1's third slot since the 2026-09-06 amendment; it held
+#: ``bge-large-en-v1.5`` until task 5.5.
+GTE = "gte-modernbert-base"
 
 
 def a_profile(**overrides: object) -> ModelProfile:
@@ -76,18 +84,23 @@ def a_profile(**overrides: object) -> ModelProfile:
 
 
 def test_exactly_the_three_named_candidates_are_declared() -> None:
-    """Requirement 4.1 names ``embeddinggemma-300m``, ``bge-large-en-v1.5`` and
-    ``nomic-embed-text-v1.5`` - three, no more and no fewer. A fourth model that
-    happens to run on this NPU is not a candidate."""
+    """Requirement 4.1 names ``embeddinggemma-300m``, ``nomic-embed-text-v1.5``
+    and ``gte-modernbert-base`` - three, no more and no fewer. A fourth model
+    that happens to run on this NPU is not a candidate.
+
+    ``bge-large-en-v1.5`` is gone, and its absence is asserted rather than merely
+    implied: this test is what makes the swap total instead of additive."""
     assert set(PROFILES) == set(ALL_NAMES)
+    assert len(PROFILES) == 3
+    assert not [name for name in PROFILES if "bge" in name]
 
 
 @pytest.mark.parametrize(
     "name, model_id",
     [
         (GEMMA, "google/embeddinggemma-300m"),
-        (BGE, "BAAI/bge-large-en-v1.5"),
         (NOMIC, "nomic-ai/nomic-embed-text-v1.5"),
+        (GTE, "Alibaba-NLP/gte-modernbert-base"),
     ],
 )
 def test_each_candidate_names_its_upstream_repository(
@@ -140,32 +153,49 @@ def test_the_published_maximum_is_the_compiled_length(name: str) -> None:
     "name, compiled, architectural",
     [
         (GEMMA, 512, 2048),
-        (BGE, 512, 512),
         (NOMIC, 512, 8192),
+        (GTE, 512, 8192),
     ],
 )
 def test_each_profile_states_both_lengths_separately(
     name: str, compiled: int, architectural: int
 ) -> None:
     """Two different numbers, two different fields. Collapsing them is the
-    failure mode this task exists to prevent - and note BGE is the case where
-    they legitimately coincide, so a test that only asserted "they differ" would
-    force a false value into that profile."""
+    failure mode this task exists to prevent."""
     profile = PROFILES[name]
     assert profile.compiled_seq_len == compiled
     assert profile.architectural_context_limit == architectural
 
 
-@pytest.mark.parametrize("name", [GEMMA, NOMIC])
+@pytest.mark.parametrize("name", ALL_NAMES)
 def test_the_long_context_models_publish_the_shorter_compiled_length(
     name: str,
 ) -> None:
     """The distinction is only observable where the two numbers differ. For
     EmbeddingGemma a consumer trusting 2048 would lose three quarters of every
-    chunk to silent truncation at 512 (research.md)."""
+    chunk to silent truncation at 512 (research.md); for ModernBERT's 8192 it
+    would lose fifteen sixteenths.
+
+    Every current candidate is such a case - ``bge-large-en-v1.5`` was the one
+    where the two numbers coincided, and it left the lineup at task 5.5. That
+    coincidence must stay *permissible* even though no candidate exercises it
+    now, which is what the invariant test below pins."""
     profile = PROFILES[name]
     assert profile.compiled_seq_len < profile.architectural_context_limit
     assert profile.max_input_tokens != profile.architectural_context_limit
+
+
+def test_a_profile_may_still_compile_at_its_architectural_limit() -> None:
+    """The two lengths are separate facts, not facts that must differ.
+
+    ``bge-large-en-v1.5`` was the candidate where they legitimately coincided,
+    and with it gone the parametrized test above would happily accept an
+    implementation that *required* them to differ - which would force a false
+    architectural limit into any future candidate that attends exactly what it
+    was compiled at."""
+    profile = a_profile(compiled_seq_len=512, architectural_context_limit=512)
+
+    assert profile.max_input_tokens == 512
 
 
 @pytest.mark.parametrize("name", ALL_NAMES)
@@ -190,15 +220,11 @@ def test_no_profile_compiles_beyond_what_the_model_can_attend_to(
             "task: search result | query: {content}",
         ),
         (
-            BGE,
-            "{content}",
-            "Represent this sentence for searching relevant passages: {content}",
-        ),
-        (
             NOMIC,
             "search_document: {content}",
             "search_query: {content}",
         ),
+        (GTE, "{content}", "{content}"),
     ],
 )
 def test_templates_match_the_published_conventions_character_for_character(
@@ -206,8 +232,13 @@ def test_templates_match_the_published_conventions_character_for_character(
 ) -> None:
     """Requirement 3.4. These strings are quoted from the model cards
     (research.md, "EmbeddingGemma model characteristics"); the spacing around
-    EmbeddingGemma's pipes and the trailing space after BGE's colon are part of
-    the convention, not formatting."""
+    EmbeddingGemma's pipes and the trailing space after Nomic's colons are part
+    of the convention, not formatting.
+
+    ``gte-modernbert-base`` publishes ``"prompts": {}`` and a null
+    ``default_prompt_name`` in its ``config_sentence_transformers.json``: no
+    instruction on either side. Both templates are therefore the identity, which
+    is a quoted convention like any other rather than a gap to be filled."""
     profile = PROFILES[name]
     assert profile.document_template == document_template
     assert profile.query_template == query_template
@@ -233,12 +264,12 @@ def test_the_missing_title_sentinel_is_the_literal_word_none() -> None:
             DocumentText("The body text."),
             "title: none | text: The body text.",
         ),
-        (BGE, DocumentText("The body text."), "The body text."),
         (
             NOMIC,
             DocumentText("The body text."),
             "search_document: The body text.",
         ),
+        (GTE, DocumentText("The body text."), "The body text."),
     ],
 )
 def test_document_rendering_applies_the_model_convention(
@@ -251,12 +282,8 @@ def test_document_rendering_applies_the_model_convention(
     "name, rendered",
     [
         (GEMMA, "task: search result | query: how does it work"),
-        (
-            BGE,
-            "Represent this sentence for searching relevant passages: "
-            "how does it work",
-        ),
         (NOMIC, "search_query: how does it work"),
+        (GTE, "how does it work"),
     ],
 )
 def test_query_rendering_applies_the_model_convention(
@@ -265,7 +292,82 @@ def test_query_rendering_applies_the_model_convention(
     assert PROFILES[name].render_query("how does it work") == rendered
 
 
-@pytest.mark.parametrize("name", [BGE, NOMIC])
+# --------------------------------------------------------------------------
+# Requirement 3.4's no-op path: a symmetric model whose templates are identity
+#
+# Task 5.5's Observable. Nothing exercised this before ``gte-modernbert-base``
+# joined the lineup: every earlier candidate decorated at least one side, so an
+# identity template ran through the template machinery for the first time here.
+# --------------------------------------------------------------------------
+
+#: Awkward on purpose. Leading and trailing whitespace, an internal newline and
+#: a colon are exactly what a stray ``strip()``, a ``join`` or a "helpful"
+#: prefix would disturb, and all three would survive a fixture reading
+#: ``"hello"``.
+RAW_TEXT = "  Ada Lovelace:\nthe first programmer.  "
+
+
+def test_a_symmetric_model_embeds_the_text_it_was_given_and_nothing_else() -> None:
+    """Identity means identity: not "close to", not "stripped", not "prefixed".
+
+    The comparison is against the literal input rather than against another
+    rendering, so a template that decorated *both* sides identically - which
+    equality between the two renderings would happily accept - is still caught.
+    """
+    profile = PROFILES[GTE]
+
+    assert profile.render_document(DocumentText(RAW_TEXT)) == RAW_TEXT
+    assert profile.render_query(RAW_TEXT) == RAW_TEXT
+
+
+def test_a_symmetric_model_renders_a_document_and_a_query_alike() -> None:
+    """Implementation Note 5.1 in reverse.
+
+    That note forbids asserting that a document and a query rendering *differ*,
+    because Nomic's two templates legitimately produce equal token counts. This
+    is the first profile where the renderings themselves are genuinely equal, so
+    the property is asserted positively - and each side is still checked against
+    its own independent reference above, never only against the other.
+    """
+    profile = PROFILES[GTE]
+    document = DocumentText(RAW_TEXT)
+
+    assert profile.render_document(document) == profile.render_query(RAW_TEXT)
+
+
+def test_the_identity_case_is_not_how_every_profile_behaves() -> None:
+    """Non-vacuity for the two tests above.
+
+    If `render_document` simply returned its content for every model, both would
+    pass and prove nothing about the identity template. The other two candidates
+    demonstrably transform the same text.
+    """
+    for name in (GEMMA, NOMIC):
+        assert PROFILES[name].render_document(DocumentText(RAW_TEXT)) != RAW_TEXT
+        assert PROFILES[name].render_query(RAW_TEXT) != RAW_TEXT
+        assert RAW_TEXT in PROFILES[name].render_document(DocumentText(RAW_TEXT))
+
+
+def test_the_lineup_spans_both_a_symmetric_and_an_asymmetric_convention() -> None:
+    """Non-vacuity for a biconditional asserted in the live tokenizer suite.
+
+    ``test_tokenize_live.py`` asserts that a document and a query rendering are
+    equal exactly when the two templates are - a statement that would pass
+    trivially if every candidate fell on the same side of it. It is pinned here,
+    where no network is involved and nothing can skip it: Implementation Note
+    4.2, a gap covered only by a live test is not covered at all.
+    """
+    symmetric = {
+        name
+        for name, profile in PROFILES.items()
+        if profile.document_template == profile.query_template
+    }
+
+    assert symmetric == {GTE}
+    assert set(PROFILES) - symmetric == {GEMMA, NOMIC}
+
+
+@pytest.mark.parametrize("name", [NOMIC, GTE])
 def test_a_title_is_dropped_by_a_model_whose_document_form_has_no_slot(
     name: str,
 ) -> None:
@@ -314,7 +416,7 @@ def test_an_empty_document_still_renders_its_convention() -> None:
 
 
 @pytest.mark.parametrize(
-    "name, dimension", [(GEMMA, 768), (BGE, 1024), (NOMIC, 768)]
+    "name, dimension", [(GEMMA, 768), (NOMIC, 768), (GTE, 768)]
 )
 def test_each_profile_declares_its_vector_dimension(
     name: str, dimension: int
@@ -326,7 +428,7 @@ def test_each_profile_declares_its_vector_dimension(
 
 @pytest.mark.parametrize(
     "name, has_dense_stage",
-    [(GEMMA, True), (BGE, False), (NOMIC, False)],
+    [(GEMMA, True), (NOMIC, False), (GTE, False)],
 )
 def test_only_embeddinggemma_has_a_dense_stage(
     name: str, has_dense_stage: bool
@@ -338,9 +440,46 @@ def test_only_embeddinggemma_has_a_dense_stage(
     assert PROFILES[name].has_dense_stage is has_dense_stage
 
 
-@pytest.mark.parametrize("name", ALL_NAMES)
-def test_every_profile_pools_by_masked_mean(name: str) -> None:
-    assert PROFILES[name].pooling == "mean"
+@pytest.mark.parametrize(
+    "name, pooling", [(GEMMA, "mean"), (NOMIC, "mean"), (GTE, "cls")]
+)
+def test_each_profile_declares_the_pooling_its_own_model_card_declares(
+    name: str, pooling: str
+) -> None:
+    """Read from each model's ``1_Pooling/config.json``.
+
+    ``gte-modernbert-base`` sets ``pooling_mode_cls_token = True`` and every
+    other mode false; the other two pool by mean. Mean-pooling a CLS model
+    yields a vector of the right width carrying the right norm and a different
+    meaning, so this is pinned per model rather than asserted as a property of
+    the set."""
+    assert PROFILES[name].pooling == pooling
+
+
+def test_the_lineup_does_not_pool_by_a_single_rule() -> None:
+    """Non-vacuity for the dispatch.
+
+    While every candidate pooled by mean the dispatch could return the mean
+    unconditionally and no profile-driven test could see it. Requirement 4.1's
+    amendment is what ended that, and this asserts the lineup still spans both
+    rules - if a later change collapsed it back to one, the CLS branch would go
+    quietly unexercised through the profiles again."""
+    assert {profile.pooling for profile in PROFILES.values()} == {"mean", "cls"}
+
+
+def test_no_profile_declares_a_pooling_rule_the_runtime_cannot_apply() -> None:
+    """The two halves of task 5.5 must agree.
+
+    ``profiles`` names the rule and ``postprocess`` implements it, in two
+    modules that do not import one another. A profile declaring a rule
+    `postprocess.pool` does not implement would raise at embed time - late,
+    after preparation and a compile - so the agreement is checked here instead.
+    Both directions: an unimplemented declaration *and* an implemented rule no
+    candidate uses would both be drift worth seeing."""
+    declared = {profile.pooling for profile in PROFILES.values()}
+
+    assert declared <= POOLING_RULES
+    assert set(get_args(get_type_hints(ModelProfile)["pooling"])) == POOLING_RULES
 
 
 @pytest.mark.parametrize("name", ALL_NAMES)
@@ -356,13 +495,13 @@ def test_every_profile_compiles_at_batch_size_one(name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "name, license_gated", [(GEMMA, True), (BGE, False), (NOMIC, False)]
+    "name, license_gated", [(GEMMA, True), (NOMIC, False), (GTE, False)]
 )
 def test_licence_gating_is_recorded_per_model(
     name: str, license_gated: bool
 ) -> None:
     """Requirement 4.5 turns on this flag: EmbeddingGemma is gated behind the
-    Gemma Terms of Use; the other two are MIT and Apache 2.0 and are not."""
+    Gemma Terms of Use; the other two are Apache 2.0 and are not."""
     assert PROFILES[name].license_gated is license_gated
 
 
@@ -376,7 +515,7 @@ def test_the_gated_model_carries_the_acceptance_step() -> None:
     )
 
 
-@pytest.mark.parametrize("name", [BGE, NOMIC])
+@pytest.mark.parametrize("name", [NOMIC, GTE])
 def test_an_ungated_model_carries_no_acceptance_url(name: str) -> None:
     assert PROFILES[name].license_acceptance_url is None
 

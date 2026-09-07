@@ -44,6 +44,26 @@ index was built.
    that consumes it; it also refuses a weight the order does not name, because
    dropping a projection nobody listed is the same corruption as skipping one
    that is listed.
+4. **The wrong pooling rule** (task 5.5). Two of requirement 4.1's candidates
+   pool by masked mean and `gte-modernbert-base` pools by CLS - the first
+   position, which is what its own ``1_Pooling/config.json`` declares
+   (``pooling_mode_cls_token = True``). Mean-pooling a CLS model is the same
+   class of defect as skipping a Dense stage: same width, same norm, different
+   meaning. ``ModelProfile.pooling`` says which rule the model wants, `pool`
+   dispatches on it, and `finalize` takes it as a **required** argument. Until
+   task 5.5 that field had no production consumer at all, so widening its
+   annotation alone would have left a CLS profile silently mean-pooled - which
+   is why the rule travels in rather than being assumed here.
+
+## Why the CLS branch cannot reintroduce hazard 1
+
+`cls_pool` has no ``attention_mask`` parameter. Not "ignores the mask" - cannot
+be handed one. Position 0 is a real token for every batch this runtime produces
+because `tokenize.EncodedBatch.__post_init__` refuses to construct a row whose
+mask is anything but a run of real tokens followed by padding, so the padding is
+always on the right and the first position is always the model's own ``[CLS]``.
+That invariant is upstream of here and is not re-checked here; what is checked is
+that a rule nobody implemented is refused rather than quietly replaced.
 
 ## What it refuses rather than papering over
 
@@ -84,20 +104,35 @@ from npu_rag.embedding.errors import ExecutionError
 from npu_rag.embedding.types import ProviderChoice
 
 __all__ = [
+    "POOLING_RULES",
     "POSTPROCESS_STAGE",
     "SUPPORTED_ACTIVATIONS",
     "DenseLayer",
     "apply_dense_stages",
+    "cls_pool",
     "dense_layers_from_arrays",
     "finalize",
     "l2_normalize",
     "masked_mean_pool",
+    "pool",
 ]
 
 #: The stage every failure here reports (8.1). Named for the phase of the
 #: embedding flow rather than for this file, because that is what an operator
 #: reading a traceback is trying to locate.
 POSTPROCESS_STAGE: Final = "postprocess"
+
+#: The pooling rules this module actually implements, spelled the way
+#: ``ModelProfile.pooling`` spells them. `pool` refuses anything outside this
+#: set, so a profile that declares a rule nobody wrote is a loud failure instead
+#: of a vector that is the right width, the right norm and the wrong meaning.
+#:
+#: This set and ``ModelProfile.pooling``'s annotation state the same fact in two
+#: places - ``profiles`` sits above this module and could import the set, but
+#: making the declaration depend on the implementation would put behaviour in
+#: what is meant to be data. ``tests/embedding/test_profiles.py`` compares the
+#: two directly, so they cannot drift apart in silence.
+POOLING_RULES: Final[frozenset[str]] = frozenset({"mean", "cls"})
 
 
 def _identity(values: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
@@ -285,6 +320,104 @@ def masked_mean_pool(
     return pooled
 
 
+def cls_pool(
+    token_embeddings: npt.NDArray[np.float32],
+    *,
+    provider: ProviderChoice | None = None,
+    model_id: str | None = None,
+) -> npt.NDArray[np.float32]:
+    """Take each row's **first** position and read nothing else (4.1).
+
+    ``gte-modernbert-base`` declares ``pooling_mode_cls_token = True`` in its own
+    ``1_Pooling/config.json``: the sentence vector is the ``[CLS]`` position's
+    token embedding, not an average over the sequence.
+
+    **There is deliberately no ``attention_mask`` parameter.** The mask-blind
+    pooling hazard in this module's docstring is a hazard of reading padded
+    positions; a function that cannot be handed a mask cannot be written to
+    misuse one, and one that took a mask and ignored it would invite a later
+    reader to "fix" the omission. Position 0 is guaranteed to be a real token
+    rather than padding by `tokenize.EncodedBatch`, which refuses to construct a
+    row whose mask is not a run of real tokens followed by padding.
+
+    Raises `ExecutionError` for a zero-length sequence, which has no first
+    position; NumPy would otherwise raise ``IndexError`` from inside a
+    post-processing call that carries none of requirement 8.1's context.
+    """
+    if token_embeddings.ndim != 3:
+        raise _fail(
+            f"token embeddings are {token_embeddings.ndim}-dimensional; the "
+            "backend contract is (batch, sequence, hidden)",
+            provider=provider,
+            model_id=model_id,
+        )
+    if token_embeddings.dtype != np.float32:
+        raise _fail(
+            f"token embeddings carry {token_embeddings.dtype} values, not "
+            "float32, which is what every backend returns",
+            provider=provider,
+            model_id=model_id,
+        )
+    if token_embeddings.shape[1] == 0:
+        raise _fail(
+            "the sequence dimension is empty, so there is no first position to "
+            "pool. A CLS model's vector is that position and nothing else, so "
+            "there is no fallback that would mean anything",
+            provider=provider,
+            model_id=model_id,
+        )
+
+    # A copy, not the view ``token_embeddings[:, 0, :]`` would be: every other
+    # function here hands back an array the caller does not already own, and a
+    # view would alias the backend's output buffer.
+    pooled: npt.NDArray[np.float32] = np.array(
+        token_embeddings[:, 0, :], dtype=np.float32, copy=True
+    )
+    return pooled
+
+
+def pool(
+    token_embeddings: npt.NDArray[np.float32],
+    attention_mask: npt.NDArray[Any],
+    *,
+    rule: str,
+    provider: ProviderChoice | None = None,
+    model_id: str | None = None,
+) -> npt.NDArray[np.float32]:
+    """Collapse token embeddings to one vector per row, by the declared rule.
+
+    ``rule`` is ``ModelProfile.pooling``, carried in by the caller rather than
+    decided here - the same reasoning that makes `dense_layers_from_arrays`'
+    key names required arguments. An unrecognised rule is **refused**: falling
+    back to the mean would give a CLS model vectors of the right width and the
+    right norm that mean something else, which is exactly the failure this
+    module's docstring exists to enumerate.
+
+    ``attention_mask`` is accepted for every rule and forwarded only to the ones
+    that pool over more than one position. The CLS branch never receives it.
+    """
+    if rule == "mean":
+        return masked_mean_pool(
+            token_embeddings,
+            attention_mask,
+            provider=provider,
+            model_id=model_id,
+        )
+    if rule == "cls":
+        return cls_pool(
+            token_embeddings, provider=provider, model_id=model_id
+        )
+    raise _fail(
+        f"the active model declares {rule!r} pooling, which this runtime does "
+        "not implement. It is refused rather than pooled by some other rule: "
+        "every rule here produces a vector of the same width carrying the same "
+        "norm, so a substituted one would be undetectable downstream and would "
+        f"only ever surface as poor retrieval. Known: {sorted(POOLING_RULES)}",
+        provider=provider,
+        model_id=model_id,
+    )
+
+
 def _activation_of(
     layer: DenseLayer,
     *,
@@ -434,6 +567,7 @@ def finalize(
     token_embeddings: npt.NDArray[np.float32],
     attention_mask: npt.NDArray[Any],
     *,
+    pooling: str,
     dense: Sequence[DenseLayer] = (),
     provider: ProviderChoice | None = None,
     model_id: str | None = None,
@@ -447,6 +581,12 @@ def finalize(
     somewhere else - which is why the order is fixed here rather than left to
     the caller to assemble.
 
+    ``pooling`` is ``ModelProfile.pooling`` and has **no default** (task 5.5).
+    Defaulting it to ``"mean"`` would be the whole defect back again: a caller
+    that forgot to pass it would mean-pool a CLS model and produce vectors of
+    the right width and the right norm that mean something else. Requiring it
+    makes stating the model's rule the only way to call this function at all.
+
     ``dense`` is empty for a profile that declares no Dense stage, and is the
     recorded pipeline order for one that does. Row order is the input's
     (requirement 3.1) and identical input gives bitwise identical output
@@ -454,9 +594,10 @@ def finalize(
     the same values, with no dependence on batch position, iteration order, or
     anything the caller did before.
     """
-    pooled = masked_mean_pool(
+    pooled = pool(
         token_embeddings,
         attention_mask,
+        rule=pooling,
         provider=provider,
         model_id=model_id,
     )

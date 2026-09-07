@@ -29,7 +29,7 @@ The project is **retrieval-only**. It contains no LLM and generates no answers â
 - **Environment gap**: Ryzen AI Software is not installed on the target machine, and the NPU driver is `32.0.20102.3930` against a Ryzen AI 1.8 minimum of `32.0.203.280`. Provisioning is in scope for the first spec.
 - **NPU compilation**: VitisAI EP requires static tensor shapes. Sequence length is fixed at compile time and batch size is 1 by default (dynamic batch only since 1.8's predecessors). This constrains chunking and batching design, not just model loading.
 - **Model support**: Strix (STX) supports CNN INT8/BF16, NLP BF16, and LLM via OGA. BERT-style encoders are NPU-eligible on this silicon; INT8-only parts (Phoenix/Hawk Point) are not a target.
-- **Licensing**: `embeddinggemma-300m` is under Google's **Gemma Terms of Use** (gated, acceptable-use restrictions), not a permissive license. `bge-large-en-v1.5` is MIT; `nomic-embed-text-v1.5` is Apache 2.0. Acceptable for personal use; constrains redistribution of a bundled model.
+- **Licensing**: `embeddinggemma-300m` is under Google's **Gemma Terms of Use** (gated, acceptable-use restrictions), not a permissive license. `nomic-embed-text-v1.5` is Apache 2.0; `gte-modernbert-base` is Apache 2.0 and **not gated**. *(Amended 2026-09-06: the third candidate was `bge-large-en-v1.5`, MIT â€” see requirement 4.1; carried into the code by task 5.5.)* Acceptable for personal use; constrains redistribution of a bundled model.
 - **Offline**: No network dependency at query time. Model download is a one-time provisioning step.
 
 ## Boundary Strategy

@@ -578,6 +578,11 @@ class EmbeddingService:
                 finalize(
                     embeddings[:actual],
                     attention_mask[:actual],
+                    # The active model's own rule, never a default: two
+                    # candidates pool by masked mean and one by CLS, and the
+                    # wrong choice is the right width and the right norm
+                    # carrying a different meaning (task 5.5).
+                    pooling=self._profile.pooling,
                     dense=self._dense,
                     provider=provider,
                     model_id=self._profile.model_id,

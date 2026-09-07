@@ -47,7 +47,7 @@ from npu_rag.embedding.tokenize import (
 from npu_rag.embedding.types import DocumentText, TextKind
 
 GEMMA = profile_for("embeddinggemma-300m")
-BGE = profile_for("bge-large-en-v1.5")
+GTE = profile_for("gte-modernbert-base")
 NOMIC = profile_for("nomic-embed-text-v1.5")
 
 #: A resolved commit hash, shaped as `AcquiredModel` insists on.
@@ -113,7 +113,7 @@ def _vocabulary() -> dict[str, int]:
 def _template_words() -> tuple[str, ...]:
     return tuple(
         word
-        for profile in (GEMMA, BGE, NOMIC)
+        for profile in (GEMMA, GTE, NOMIC)
         for template in (profile.document_template, profile.query_template)
         for word in template.replace("{title}", "").replace("{content}", "").split()
     )
@@ -166,7 +166,7 @@ def unpadded_tokenizer() -> PreTrainedTokenizerBase:
 
 
 def model_tokenizer(
-    profile: ModelProfile = BGE,
+    profile: ModelProfile = GTE,
     tokenizer: PreTrainedTokenizerBase | None = None,
 ) -> ModelTokenizer:
     return ModelTokenizer(
@@ -183,7 +183,7 @@ def documents() -> ModelTokenizer:
 
 @pytest.fixture
 def plain() -> ModelTokenizer:
-    return model_tokenizer(BGE)
+    return model_tokenizer(GTE)
 
 
 def content_counting(
@@ -249,7 +249,7 @@ def reference_count(
 def test_the_active_models_tokenizer_is_the_object_a_consumer_receives() -> None:
     tokenizer = bracketing_tokenizer()
 
-    subject = model_tokenizer(BGE, tokenizer)
+    subject = model_tokenizer(GTE, tokenizer)
 
     assert subject.tokenizer is tokenizer
 
@@ -261,16 +261,16 @@ def test_the_tokenizer_identity_names_the_repository_and_the_resolved_commit(
     downstream specs re-check against, so it must move when the tokenizer does.
     A repository name alone would compare equal to itself forever."""
     acquired = AcquiredModel(
-        model_id=BGE.model_id, revision=SHA, local_path=tmp_path
+        model_id=GTE.model_id, revision=SHA, local_path=tmp_path
     )
 
     subject = load_tokenizer(
-        BGE,
+        GTE,
         acquire=_fixed_acquisition(acquired),
         loader=lambda _path: bracketing_tokenizer(),
     )
 
-    assert subject.tokenizer_id == f"{BGE.model_id}@{SHA}"
+    assert subject.tokenizer_id == f"{GTE.model_id}@{SHA}"
 
 
 def test_loading_asks_acquisition_for_tokenizer_files_and_not_for_weights(
@@ -285,7 +285,7 @@ def test_loading_asks_acquisition_for_tokenizer_files_and_not_for_weights(
         )
 
     load_tokenizer(
-        BGE, acquire=acquire, loader=lambda _path: bracketing_tokenizer()
+        GTE, acquire=acquire, loader=lambda _path: bracketing_tokenizer()
     )
 
     patterns = recorded["allow_patterns"]
@@ -325,16 +325,16 @@ def test_a_tokenizer_that_will_not_load_is_a_preparation_failure_naming_a_stage(
 
     with pytest.raises(PreparationError) as raised:
         load_tokenizer(
-            BGE,
+            GTE,
             acquire=_fixed_acquisition(
                 AcquiredModel(
-                    model_id=BGE.model_id, revision=SHA, local_path=tmp_path
+                    model_id=GTE.model_id, revision=SHA, local_path=tmp_path
                 )
             ),
             loader=loader,
         )
 
-    assert raised.value.model_id == BGE.model_id
+    assert raised.value.model_id == GTE.model_id
     assert raised.value.stage
     assert raised.value.stage != "unspecified"
 
@@ -351,7 +351,7 @@ def _fixed_acquisition(acquired: AcquiredModel) -> Any:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("profile", [GEMMA, BGE, NOMIC])
+@pytest.mark.parametrize("profile", [GEMMA, GTE, NOMIC])
 def test_the_published_maximum_is_the_compiled_length(
     profile: ModelProfile,
 ) -> None:
@@ -630,7 +630,7 @@ def test_encoding_produces_the_compiled_shape_and_dtype(
 ) -> None:
     batch = plain.encode_documents(list(SAMPLE_PROSE))
 
-    expected = (len(SAMPLE_PROSE), BGE.compiled_seq_len)
+    expected = (len(SAMPLE_PROSE), GTE.compiled_seq_len)
     assert batch.token_ids.shape == expected
     assert batch.attention_mask.shape == expected
     assert batch.token_ids.dtype == np.int64
@@ -664,7 +664,7 @@ def test_padding_uses_the_tokenizers_own_pad_token(
 
 
 def test_padding_falls_back_to_zero_when_no_pad_token_is_declared() -> None:
-    subject = model_tokenizer(BGE, unpadded_tokenizer())
+    subject = model_tokenizer(GTE, unpadded_tokenizer())
 
     batch = subject.encode_documents([SAMPLE_PROSE[0]])
 
@@ -720,7 +720,7 @@ def test_an_empty_batch_is_still_shaped_for_the_compiled_length(
 ) -> None:
     batch = plain.encode_documents([])
 
-    assert batch.token_ids.shape == (0, BGE.compiled_seq_len)
+    assert batch.token_ids.shape == (0, GTE.compiled_seq_len)
     assert batch.token_counts == ()
     assert batch.truncated_indices == ()
 
@@ -793,7 +793,7 @@ def test_a_tokenizer_that_returns_more_ids_than_the_graph_has_slots_is_refused()
     None
 ):
     subject = ModelTokenizer(
-        profile=BGE,
+        profile=GTE,
         tokenizer=_OverLongTokenizer(),  # type: ignore[arg-type]
         tokenizer_id="broken@" + SHA,
     )

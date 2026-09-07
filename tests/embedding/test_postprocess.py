@@ -17,6 +17,7 @@ a real defect.
 from __future__ import annotations
 
 import ast
+import inspect
 import math
 from pathlib import Path
 from typing import Any
@@ -27,13 +28,16 @@ import pytest
 
 from npu_rag.embedding.errors import EmbeddingRuntimeError, ExecutionError
 from npu_rag.embedding.postprocess import (
+    POOLING_RULES,
     POSTPROCESS_STAGE,
     DenseLayer,
     apply_dense_stages,
+    cls_pool,
     dense_layers_from_arrays,
     finalize,
     l2_normalize,
     masked_mean_pool,
+    pool,
 )
 from npu_rag.embedding.types import ProviderChoice
 
@@ -91,6 +95,25 @@ ATTENTION_MASK: npt.NDArray[np.int64] = np.array(
 #:   column 2: (0.5 + 1.5) / 2 = 1.0
 POOLED_BY_HAND: npt.NDArray[np.float32] = np.array(
     [[1.0, 3.0, 2.0], [3.0, -1.0, 1.0]], dtype=np.float32
+)
+
+#: Hand-copied CLS pool of the same fixture: each row's position 0, verbatim.
+#:
+#:   Row 0, position 0: [ 1.0,  2.0, -1.0]
+#:   Row 1, position 0: [ 2.0, -3.0,  0.5]
+#:
+#: Read off the literal above rather than computed. It differs from
+#: `POOLED_BY_HAND` in every ROW and in DIRECTION - not in every component:
+#: row 0's first component is 1.0 either way, which is a coincidence of the
+#: fixture and not something to design around. Direction is the property that
+#: matters, because these vectors are L2-normalised downstream and a CLS branch
+#: returning a scaled mean would survive a magnitude-only comparison. See
+#: `test_the_fixture_can_tell_cls_pooling_from_mean_pooling`, which checks five
+#: axes - whole-array inequality, per-row inequality, per-row |cosine| < 0.99,
+#: position 0 against every other attended position, and against last-token
+#: pooling - and is what stops a CLS branch that quietly returns the mean.
+CLS_BY_HAND: npt.NDArray[np.float32] = np.array(
+    [[1.0, 2.0, -1.0], [2.0, -3.0, 0.5]], dtype=np.float32
 )
 
 #: Two projections whose names sort into the *reverse* of their pipeline order,
@@ -196,7 +219,7 @@ def unit(row: list[float]) -> list[float]:
     return [value / length for value in row]
 
 
-#: finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, dense=pipeline_stages()),
+#: finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean", dense=pipeline_stages()),
 #: computed end to end by hand: pool, then both projections, then normalize.
 FINALIZED_BY_HAND: list[list[float]] = [
     unit([7.0, 2.0, 2.0]),
@@ -238,6 +261,60 @@ def test_the_mask_fixture_would_expose_a_mask_blind_pool() -> None:
         "dividing by the padded length instead of the attended count must give "
         "a visibly different answer"
     )
+
+
+def test_the_fixture_can_tell_cls_pooling_from_mean_pooling() -> None:
+    """Task 5.5's fixture obligation, and the sharpest one in this file.
+
+    A CLS branch that returned the mean would be undetectable on a fixture where
+    the two coincide - same width, same norm, different meaning, which is the
+    fourth entry in the module docstring's list. So the fixture's discriminating
+    power is asserted here rather than assumed, on four separate axes.
+    """
+    assert not np.allclose(CLS_BY_HAND, POOLED_BY_HAND), (
+        "CLS and mean pooling must give visibly different vectors, or the CLS "
+        "branch is untested no matter how it is written"
+    )
+    for row in range(TOKEN_EMBEDDINGS.shape[0]):
+        assert not np.allclose(CLS_BY_HAND[row], POOLED_BY_HAND[row]), (
+            f"row {row} must differ under the two rules; a fixture where only "
+            "one row differed would leave the other proving nothing"
+        )
+
+    # Differing is not enough once `finalize` normalizes: two vectors pointing
+    # the same way are the *same* unit vector, so a CLS branch returning a
+    # scaled mean would survive every assertion downstream of normalization.
+    for row in range(TOKEN_EMBEDDINGS.shape[0]):
+        cls_row = CLS_BY_HAND[row].astype(np.float64)
+        mean_row = POOLED_BY_HAND[row].astype(np.float64)
+        cosine = float(
+            cls_row @ mean_row
+            / (np.linalg.norm(cls_row) * np.linalg.norm(mean_row))
+        )
+        assert abs(cosine) < 0.99, (
+            f"row {row}'s two poolings must point in different directions, not "
+            f"merely differ in length (cosine {cosine})"
+        )
+
+    # "Take the first position" must be distinguishable from "take some other
+    # position": if position 0 equalled any other attended position, the
+    # assertion could not tell the two apart.
+    for row in range(TOKEN_EMBEDDINGS.shape[0]):
+        attended = int(ATTENTION_MASK[row].sum())
+        for position in range(1, attended):
+            assert not np.allclose(
+                TOKEN_EMBEDDINGS[row, position], CLS_BY_HAND[row]
+            ), f"row {row} position {position} duplicates its first position"
+
+    # And from "take the last attended position", which is the other pooling
+    # rule sentence-transformers publishes.
+    last = np.array(
+        [
+            TOKEN_EMBEDDINGS[row, int(ATTENTION_MASK[row].sum()) - 1]
+            for row in range(TOKEN_EMBEDDINGS.shape[0])
+        ]
+    )
+    assert not np.allclose(last, CLS_BY_HAND)
 
 
 def test_the_dense_fixture_would_expose_a_sorted_order() -> None:
@@ -413,6 +490,183 @@ def test_a_shape_that_cannot_be_pooled_is_refused(
 ) -> None:
     with pytest.raises(ExecutionError):
         masked_mean_pool(tokens, mask)
+
+
+# --------------------------------------------------------------------------
+# CLS pooling (4.1, task 5.5)
+#
+# ``gte-modernbert-base`` declares ``pooling_mode_cls_token = True`` in its own
+# ``1_Pooling/config.json``. Its vector is the first position and nothing else.
+# --------------------------------------------------------------------------
+
+
+def test_cls_pooling_takes_the_first_position_and_matches_the_reference() -> None:
+    pooled = cls_pool(TOKEN_EMBEDDINGS)
+
+    np.testing.assert_array_equal(pooled, CLS_BY_HAND)
+
+
+def test_cls_pooling_cannot_be_handed_an_attention_mask_at_all() -> None:
+    """Structural, not behavioural, and that is the point.
+
+    Requirement 4.1: the CLS branch "does not consult the attention mask at all,
+    so it cannot reintroduce the mask-blind pooling hazard". A function that
+    accepted a mask and ignored it would be one edit away from using it, and
+    would invite a later reader to "fix" the omission. It has no such parameter.
+    """
+    parameters = set(inspect.signature(cls_pool).parameters)
+
+    assert "attention_mask" not in parameters
+    assert parameters == {"token_embeddings", "provider", "model_id"}
+
+
+def test_cls_pooling_ignores_a_mask_that_mean_pooling_would_refuse() -> None:
+    """The behavioural half of the same fact, routed through the dispatcher.
+
+    An all-zero mask has no mean and `masked_mean_pool` refuses it. The CLS rule
+    has an answer regardless, because it never asks. If the dispatcher leaked the
+    mask into the CLS path this would raise instead of returning.
+    """
+    blind = np.zeros_like(ATTENTION_MASK)
+
+    with pytest.raises(ExecutionError):
+        pool(TOKEN_EMBEDDINGS, blind, rule="mean")
+
+    np.testing.assert_array_equal(
+        pool(TOKEN_EMBEDDINGS, blind, rule="cls"), CLS_BY_HAND
+    )
+
+
+def test_cls_pooling_is_unmoved_by_anything_beyond_the_first_position() -> None:
+    """Positions 1 onward may hold values arithmetic cannot survive."""
+    poisoned = TOKEN_EMBEDDINGS.copy()
+    poisoned[:, 1:, :] = np.float32("nan")
+
+    np.testing.assert_array_equal(cls_pool(poisoned), CLS_BY_HAND)
+
+
+def test_cls_pooling_preserves_row_order() -> None:
+    order = [1, 0]
+
+    swapped = cls_pool(TOKEN_EMBEDDINGS[order].copy())
+
+    np.testing.assert_array_equal(swapped, CLS_BY_HAND[order])
+
+
+def test_cls_pooling_returns_float32_of_the_trunk_width() -> None:
+    pooled = cls_pool(TOKEN_EMBEDDINGS)
+
+    assert pooled.dtype == np.float32
+    assert pooled.shape == (
+        TOKEN_EMBEDDINGS.shape[0],
+        TOKEN_EMBEDDINGS.shape[2],
+    )
+
+
+def test_cls_pooling_does_not_modify_or_alias_its_argument() -> None:
+    tokens = TOKEN_EMBEDDINGS.copy()
+
+    pooled = cls_pool(tokens)
+    pooled[0, 0] = 999.0
+
+    np.testing.assert_array_equal(tokens, TOKEN_EMBEDDINGS)
+    assert pooled.base is None
+
+
+def test_a_sequence_with_no_first_position_is_refused() -> None:
+    """Refused with this module's own diagnosis rather than NumPy's
+    ``IndexError``, which would carry none of requirement 8.1's context."""
+    empty = np.zeros((2, 0, 3), dtype=np.float32)
+
+    with pytest.raises(ExecutionError) as caught:
+        cls_pool(empty, provider=ProviderChoice.NPU, model_id="vendor/model")
+
+    assert caught.value.stage == POSTPROCESS_STAGE
+    assert caught.value.provider is ProviderChoice.NPU
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        np.zeros((2, 6), dtype=np.float32),
+        np.zeros((2, 6, 3), dtype=np.float64),
+    ],
+)
+def test_a_shape_or_precision_that_cannot_be_cls_pooled_is_refused(
+    tokens: npt.NDArray[Any],
+) -> None:
+    with pytest.raises(ExecutionError):
+        cls_pool(tokens)
+
+
+# --------------------------------------------------------------------------
+# Dispatching the pooling rule (4.1, task 5.5)
+#
+# Implementation Note on requirement 4.1: ``ModelProfile.pooling`` had no
+# production consumer at all before this task, so widening its annotation
+# without dispatching on it would have left a CLS profile silently mean-pooled.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rule", "expected"), [("mean", POOLED_BY_HAND), ("cls", CLS_BY_HAND)]
+)
+def test_the_declared_rule_selects_the_pooling_it_names(
+    rule: str, expected: npt.NDArray[np.float32]
+) -> None:
+    np.testing.assert_array_equal(
+        pool(TOKEN_EMBEDDINGS, ATTENTION_MASK, rule=rule), expected
+    )
+
+
+def test_an_unimplemented_rule_is_refused_rather_than_pooled_by_the_mean() -> None:
+    """The failure mode this dispatch exists for.
+
+    Every rule produces a vector of the same width carrying the same norm, so a
+    substituted one is invisible to every check downstream and surfaces only as
+    poor retrieval - the same shape of defect as a skipped Dense stage.
+    """
+    with pytest.raises(ExecutionError) as caught:
+        pool(
+            TOKEN_EMBEDDINGS,
+            ATTENTION_MASK,
+            rule="lasttoken",
+            provider=ProviderChoice.CPU,
+            model_id="vendor/model",
+        )
+
+    message = str(caught.value)
+    assert "lasttoken" in message
+    assert "mean" in message and "cls" in message
+    assert caught.value.stage == POSTPROCESS_STAGE
+    assert caught.value.model_id == "vendor/model"
+
+
+@pytest.mark.parametrize("rule", sorted(POOLING_RULES))
+def test_every_declared_rule_is_actually_dispatchable(rule: str) -> None:
+    """`POOLING_RULES` and the branches in `pool` state the same fact twice, so
+    this is what stops a rule being advertised that nobody implemented."""
+    pooled = pool(TOKEN_EMBEDDINGS, ATTENTION_MASK, rule=rule)
+
+    assert pooled.shape == (2, 3)
+
+
+def test_the_declared_rules_are_more_than_one_and_disagree() -> None:
+    """Non-vacuity for the two tests above.
+
+    If `POOLING_RULES` held a single rule the parametrization would prove
+    nothing, and if two rules agreed on this fixture the dispatch assertions
+    would pass whichever branch ran.
+    """
+    assert POOLING_RULES == {"mean", "cls"}
+
+    answers = [
+        pool(TOKEN_EMBEDDINGS, ATTENTION_MASK, rule=rule)
+        for rule in sorted(POOLING_RULES)
+    ]
+    for index, first in enumerate(answers):
+        for second in answers[index + 1 :]:
+            assert not np.allclose(first, second)
 
 
 # --------------------------------------------------------------------------
@@ -706,7 +960,7 @@ def test_normalization_does_not_modify_its_argument() -> None:
 
 def test_finalize_pools_then_projects_then_normalizes() -> None:
     vectors = finalize(
-        TOKEN_EMBEDDINGS, ATTENTION_MASK, dense=pipeline_stages()
+        TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean", dense=pipeline_stages()
     )
 
     np.testing.assert_allclose(
@@ -719,7 +973,7 @@ def test_finalize_normalizes_after_the_dense_stage_not_before() -> None:
     normalizing first changes the *direction* the caller receives, not merely
     its length - and the result is still unit-norm, so no norm check sees it."""
     vectors = finalize(
-        TOKEN_EMBEDDINGS, ATTENTION_MASK, dense=pipeline_stages()
+        TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean", dense=pipeline_stages()
     )
 
     normalize_first = l2_normalize(
@@ -733,7 +987,7 @@ def test_finalize_normalizes_after_the_dense_stage_not_before() -> None:
 
 
 def test_finalize_without_a_dense_stage_still_returns_unit_vectors() -> None:
-    vectors = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK)
+    vectors = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean")
 
     np.testing.assert_allclose(
         vectors,
@@ -749,7 +1003,7 @@ def test_finalize_returns_one_unit_row_per_input_row_in_order() -> None:
     vectors = finalize(
         TOKEN_EMBEDDINGS[order].copy(),
         ATTENTION_MASK[order].copy(),
-        dense=pipeline_stages(),
+        pooling="mean", dense=pipeline_stages(),
     )
 
     assert vectors.shape == (2, 3)
@@ -764,6 +1018,50 @@ def test_finalize_returns_one_unit_row_per_input_row_in_order() -> None:
     np.testing.assert_allclose(norms, np.ones(2), rtol=0, atol=1e-6)
 
 
+def test_finalize_pools_by_the_rule_it_is_given_not_by_the_mean() -> None:
+    """The whole of task 5.5 in one assertion.
+
+    Both calls return two unit vectors of width three, so no shape check and no
+    norm check anywhere downstream could tell them apart - only the numbers can,
+    and only because `CLS_BY_HAND` and `POOLED_BY_HAND` were chosen to differ.
+    """
+    by_cls = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="cls")
+    by_mean = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean")
+
+    np.testing.assert_allclose(
+        by_cls,
+        [unit([1.0, 2.0, -1.0]), unit([2.0, -3.0, 0.5])],
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    assert not np.allclose(by_cls, by_mean)
+    assert by_cls.shape == by_mean.shape == (2, 3)
+    np.testing.assert_allclose(
+        np.linalg.norm(by_cls.astype(np.float64), axis=1),
+        np.ones(2),
+        rtol=0,
+        atol=1e-6,
+    )
+
+
+def test_finalize_has_no_default_pooling_rule_to_fall_back_to() -> None:
+    """Requirement 4.1's amendment: ``ModelProfile.pooling`` had no production
+    consumer, so the hazard is a caller that never states the rule. A default
+    would silently mean-pool a CLS model; there is none to fall back to."""
+    parameter = inspect.signature(finalize).parameters["pooling"]
+
+    assert parameter.default is inspect.Parameter.empty
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+    with pytest.raises(TypeError, match="pooling"):
+        finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK)  # type: ignore[call-arg]
+
+
+def test_finalize_refuses_a_rule_the_post_processor_does_not_implement() -> None:
+    with pytest.raises(ExecutionError, match="weightedmean"):
+        finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="weightedmean")
+
+
 def test_finalize_reports_the_dimension_the_projections_end_at() -> None:
     widening = DenseLayer(
         name="widen",
@@ -772,7 +1070,9 @@ def test_finalize_reports_the_dimension_the_projections_end_at() -> None:
         activation=IDENTITY_ACTIVATION,
     )
 
-    vectors = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, dense=(widening,))
+    vectors = finalize(
+        TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean", dense=(widening,)
+    )
 
     assert vectors.shape == (2, 5)
 
@@ -783,8 +1083,8 @@ def test_finalize_reports_the_dimension_the_projections_end_at() -> None:
 
 
 def test_the_same_input_twice_returns_bitwise_identical_vectors() -> None:
-    first = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, dense=pipeline_stages())
-    second = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, dense=pipeline_stages())
+    first = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean", dense=pipeline_stages())
+    second = finalize(TOKEN_EMBEDDINGS, ATTENTION_MASK, pooling="mean", dense=pipeline_stages())
 
     assert first.tobytes() == second.tobytes()
 
@@ -797,7 +1097,7 @@ def test_the_same_row_twice_in_one_batch_returns_identical_vectors() -> None:
     )
     mask = np.stack([ATTENTION_MASK[0], ATTENTION_MASK[1], ATTENTION_MASK[0]])
 
-    vectors = finalize(tokens, mask, dense=pipeline_stages())
+    vectors = finalize(tokens, mask, pooling="mean", dense=pipeline_stages())
 
     assert vectors[0].tobytes() == vectors[2].tobytes()
 
@@ -806,7 +1106,7 @@ def test_finalize_does_not_modify_its_arguments() -> None:
     tokens = TOKEN_EMBEDDINGS.copy()
     mask = ATTENTION_MASK.copy()
 
-    finalize(tokens, mask, dense=pipeline_stages())
+    finalize(tokens, mask, pooling="mean", dense=pipeline_stages())
 
     np.testing.assert_array_equal(tokens, TOKEN_EMBEDDINGS)
     np.testing.assert_array_equal(mask, ATTENTION_MASK)
@@ -814,7 +1114,7 @@ def test_finalize_does_not_modify_its_arguments() -> None:
 
 def test_a_returned_vector_is_not_a_view_onto_the_caller_s_array() -> None:
     tokens = TOKEN_EMBEDDINGS.copy()
-    vectors = finalize(tokens, ATTENTION_MASK)
+    vectors = finalize(tokens, ATTENTION_MASK, pooling="mean")
 
     tokens[:] = 0.0
 
@@ -839,6 +1139,7 @@ def test_a_postprocessing_failure_names_provider_model_and_stage() -> None:
         finalize(
             TOKEN_EMBEDDINGS,
             mask,
+            pooling="mean",
             provider=ProviderChoice.NPU,
             model_id="google/embeddinggemma-300m",
         )
@@ -856,7 +1157,7 @@ def test_postprocessing_failures_are_execution_failures_not_preparation() -> Non
     mask[0, :] = 0
 
     with pytest.raises(EmbeddingRuntimeError) as caught:
-        finalize(TOKEN_EMBEDDINGS, mask)
+        finalize(TOKEN_EMBEDDINGS, mask, pooling="mean")
 
     assert isinstance(caught.value, ExecutionError)
 

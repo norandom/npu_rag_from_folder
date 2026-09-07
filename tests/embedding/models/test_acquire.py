@@ -7,7 +7,8 @@ repository whose terms have not been accepted - can be exercised on a machine
 where the terms *have* been accepted and the gate therefore opens.
 
 The download-size discipline is a hard constraint rather than a preference:
-``bge-large-en-v1.5`` is roughly 1.3 GB and EmbeddingGemma roughly 1.2 GB, so a
+``gte-modernbert-base``'s repository is roughly 2.5 GB - 0.6 GB of weights plus
+seven prebuilt ONNX variants - and EmbeddingGemma roughly 1.2 GB, so a
 test that "just downloads the model" would cost gigabytes per run. The live
 counterpart in ``test_acquire_live.py`` makes real requests, but only for
 metadata and a few-kilobyte ``config.json``.
@@ -66,7 +67,7 @@ SHA = "0f4a5c2b9d1e6f7a8b3c4d5e6f708192a3b4c5d6"
 OTHER_SHA = "1111111111111111111111111111111111111111"
 
 GATED = profile_for("embeddinggemma-300m")
-OPEN = profile_for("bge-large-en-v1.5")
+OPEN = profile_for("gte-modernbert-base")
 
 
 # --------------------------------------------------------------------------
@@ -622,7 +623,7 @@ def test_a_gate_on_a_profile_declared_open_still_reports_the_licensing_step(
 def test_an_authorization_failure_on_an_open_profile_is_not_a_licence_problem(
     tmp_path: Path,
 ) -> None:
-    """MIT-licensed weights behind a 403 is an access failure, not a licence
+    """Apache-2.0 weights behind a 403 is an access failure, not a licence
     gate; calling it one would send the operator to a form that does not
     exist."""
     client = FakeClient(
