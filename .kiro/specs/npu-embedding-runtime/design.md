@@ -562,10 +562,23 @@ class Measurement:
     unit: str
     unavailable_reason: str | None   # non-None exactly when value is None
 
-class PowerSampler(Protocol):
-    def supported(self) -> bool: ...
-    def sample_watts(self) -> float | None: ...
+class PowerSource(Protocol):                 # shipped shape, task 6.2
+    def read_power(self) -> PowerReading: ...  # REPORTED | UNAVAILABLE | UNSUPPORTED
+
+# PowerSampler is the concurrent collector, not a per-sample reader:
+# a single-use context manager that polls on its own thread, joins on exit,
+# and yields a PowerTrace for `integrate_power` to reduce.
 ```
+
+> **Corrected 2026-09-07 after task 6.2.** The sketch above previously read `class PowerSampler(Protocol): supported() -> bool; sample_watts() -> float | None`. It is superseded, as Implementation Note 1.4 anticipated when it recorded that this sketch "cannot express the middle state".
+>
+> `float | None` collapses *this poll came back empty* into *this platform cannot report power*, and `xrt-smi` emits the same `N/A` token for both — measured live at task 6.2: 29 of 30 polls reported, 1 came back `N/A` on hardware that fully supports the field. Requirement 6.8's omission has to say which of the two happened, so the reading carries three states rather than two. `PowerSource` is satisfied **structurally by the existing `XrtSmiWrapper`, with no adapter**.
+>
+> Splitting the concurrent collector out of the protocol is not scope creep: this section's own Responsibilities line requires sampling "concurrently with the measured call, never inside it", which a per-sample protocol cannot express. Making `PowerSampler` a context manager that owns its thread and joins on exit is what makes that structural rather than conventional.
+>
+> `supported()` is deliberately not reimplemented. `CapabilityReport.power_reporting_supported` already answers it, holds the platform evidence to answer it, and is passed into `energy_per_thousand_inputs` — re-deriving it from samples is impossible anyway, since a PHX part and this Strix part emit the same token.
+>
+> `integrate_power` reduces the trace by **left-endpoint rectangles over observed windows**, never the nominal interval. An absent reading contributes zero joules **and zero measured seconds**, its window accruing to `unmeasured_seconds` alongside a missed-sample count — dropped, never folded to 0.0 W and never interpolated. Note the trap this guards: folding `N/A` to 0.0 W yields an *identical* joule figure, so only the accounting can detect it.
 
 - NPU energy is the time-integral of polled Watts over wall-clock, not a hardware energy counter. The sampling interval and integration method are stated in the methodology (7.2).
 - **CPU-provider energy has no equivalent source.** `xrt-smi` reports NPU power only. For CPU rows, energy is recorded as unavailable with that reason (6.8), while throughput, latency, and wall-clock remain directly comparable (7.7).
