@@ -177,6 +177,27 @@
   - _Boundary: EmbeddingService_
   - _Depends: 4.1, 5.1, 5.2, 2.3_
 
+- [ ] 5.4 Close the provider-resolution and assembly defects found at feature validation
+  - Added 2026-09-07 from `/kiro-validate-impl`'s NO-GO. Each item is a confirmed defect in already-shipped code that no open task owned; none is new scope.
+  - Make an isolated-execution verdict a state provider resolution can actually act on. Task 4.4 closed without building an isolated backend, but the resolution policy still treats that verdict as "the NPU can serve", so `auto` binds the NPU factory, pays a full compile, and only then fails. Under that verdict `auto` must report the specific reason and fall back to the CPU without preparing anything, and an explicit `npu` request must be refused at resolution rather than at session construction
+  - Refuse to construct the embedding service with an empty Dense stage for a profile that declares one. The trunk width equals the published dimension, so an omitted Dense stage yields correctly-shaped, correctly-normalised, semantically wrong vectors that no shape, dtype or norm check can catch — and task 6.3 adds a second construction site
+  - Bring the capability check's vendor payload list into agreement with what provisioning installs. The check covers three files where provisioning installs six; the three it omits are those whose absence lets the provider register and then die in native code at session creation — the exact failure the check exists to pre-empt
+  - Observable: given a capability report naming isolated execution, `auto` returns CPU-served vectors carrying the reason and performs no preparation, explicit `npu` fails before preparing, and constructing the service for a Dense-stage profile without its layers is refused
+  - _Requirements: 1.1, 1.4, 2.2, 2.4, 2.5_
+  - _Boundary: provider resolution, EmbeddingService, CapabilityChecker_
+  - _Depends: 4.1, 4.3, 5.3_
+
+- [ ] 5.5 Replace the third candidate model and generalise pooling
+  - Moved here 2026-09-07 from the "Model lineup amended" appendix, which assigned it to task 6.1. It does not fit that task's `bench fixtures` boundary: this work is in `profiles.py` and `postprocess.py`, and it is what requirement 4.1 actually asks for.
+  - Dispatch pooling from the profile instead of hardcoding it, and add a CLS branch taking the first position without consulting the attention mask, so it cannot reintroduce the mask-blind pooling hazard. A profile declaring a rule the post-processor does not implement must fail loudly rather than be silently mean-pooled — the field has no production consumer today, so widening the literal alone would change nothing
+  - Replace the bge-large profile with `gte-modernbert-base`: 768-dimensional, 8192 architectural context compiled at the fixed length, Apache-2.0 and ungated, no Dense stage, symmetric identity templates on both sides
+  - Export and NPU-compile it once to confirm the path works end to end, as tasks 3.2 and 3.3 did for the control model
+  - Update the profile-set test and every remaining bge-large reference, including the live tests that fetch it over the network
+  - Observable: a fixture where CLS and mean pooling give different vectors proves the branch is selected by the profile rather than reachable only in principle; the identity-template case exercises the template machinery's no-op path, which nothing currently does
+  - _Requirements: 3.4, 3.5, 4.1_
+  - _Boundary: profiles, postprocess_
+  - _Depends: 2.2, 3.2, 3.3, 5.2_
+
 - [ ] 6. Benchmark instrumentation
 
 - [ ] 6.1 (P) Build the committed benchmark fixture
@@ -202,7 +223,7 @@
   - Observable: a single pass produces one metric record per model and provider combination, each carrying all four metric families
   - _Requirements: 6.1, 6.2, 6.5_
   - _Boundary: BenchmarkHarness_
-  - _Depends: 5.3, 6.1, 6.2_
+  - _Depends: 5.3, 5.5, 6.1, 6.2_
 
 - [ ] 6.4 Add repetition, variance, run provenance, and per-cell failure tolerance
   - Repeat each cell more than once and report the observed variation across repetitions
@@ -403,9 +424,9 @@ Five tasks have now shipped a test whose data or assertion made a check triviall
 5. CI has no NPU, so a gap covered only by a live test is not covered at all.
 
 
-## Model lineup amended 2026-09-06 - obligations for task 6.1
+## Model lineup amended 2026-09-06 - obligations for task 5.5
 
-Requirement 4.1's third candidate changed from `bge-large-en-v1.5` to `gte-modernbert-base`. Spec documents are amended; **the code is not**. `profiles.py` still declares bge-large and a test pins the set to exactly the three it knows, so 6.1 must land all of the following together:
+Requirement 4.1's third candidate changed from `bge-large-en-v1.5` to `gte-modernbert-base`. Spec documents are amended; **the code is not**. `profiles.py` still declares bge-large and a test pins the set to exactly the three it knows, so 5.5 must land all of the following together. *(Reassigned from 6.1 to 5.5 on 2026-09-07: `/kiro-validate-impl` found this work sits outside 6.1's `bench fixtures` boundary, and that requirement 4.1 was cited only by the closed task 2.2 — so nothing gated the swap.)*
 
 1. **Widen `ModelProfile.pooling`** from `Literal["mean"]` to include `"cls"`, and add a CLS branch to `postprocess.py` - `tokens[:, 0, :]`, taking the first position. Verified from the model's own `1_Pooling/config.json`: `pooling_mode_cls_token = True`. The CLS path does NOT consult the attention mask, so it cannot reintroduce the mask-blind pooling hazard; but it must still be pinned by a test with a fixture where CLS and mean differ, or the branch is vacuous (see the standing lesson above).
 2. **Replace the bge-large profile** with gte-modernbert-base: 149M params, ~600 MB exported, 768-dim, 8192 architectural context compiled at 512, Apache-2.0, **not gated**, **no Dense stage**, **symmetric** - document and query templates are both identity passthrough. That identity case is worth a test of its own: it exercises the template machinery's no-op path, which nothing currently does.
