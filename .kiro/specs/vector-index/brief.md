@@ -9,7 +9,7 @@ There is a second, subtler problem: one Substack post chunks into four to six pi
 ## Current State
 
 - No store exists.
-- Corpus sizing is known: roughly 10–30k chunks, 40–120 MB of vectors at 1024 dimensions. The target machine has 23.6 GB RAM.
+- Corpus sizing is known: roughly 10–30k chunks, 30–92 MB of vectors at **768 dimensions**. The target machine has 23.6 GB RAM. *(Corrected 2026-09-07: this said 1024 dimensions, which was `bge-large-en-v1.5`'s width. That candidate was replaced by `gte-modernbert-base` under requirement 4.1, and **all three shipping models are now 768-dimensional** — see `npu-embedding-runtime/profiles.py`. The default is `embeddinggemma-300m`, also 768. Float32 at 768 dims is 3,072 bytes per vector.)*
 - LanceDB is the selected store (Apache 2.0, embedded, memory-mapped, actively maintained), with sqlite-vec as the documented fallback.
 - At this scale exact brute-force kNN costs about 61 MFLOP over roughly 123 MB — around 2 ms, bandwidth-bound rather than compute-bound. ANN indexing is not yet warranted.
 

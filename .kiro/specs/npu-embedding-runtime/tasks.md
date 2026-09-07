@@ -201,7 +201,7 @@
   - _Boundary: profiles, postprocess_
   - _Depends: 2.2, 3.2, 3.3, 5.2_
 
-- [ ] 6. Benchmark instrumentation
+- [x] 6. Benchmark instrumentation - **PARTIALLY CLOSED 2026-09-07: 6.1-6.3 shipped, 6.4-6.7 DESCOPED**
 
 - [x] 6.1 (P) Build the committed benchmark fixture
   - Generate a small pre-extracted text sample from the target archive using a throwaway script, then commit the result as static test data
@@ -232,7 +232,7 @@
   - _Boundary: BenchmarkHarness_
   - _Depends: 5.3, 5.5, 6.1, 6.2_
 
-- [ ] 6.4 Add repetition, variance, run provenance, and per-cell failure tolerance
+- [x] 6.4 Add repetition, variance, run provenance, and per-cell failure tolerance - **DESCOPED 2026-09-07, no code written**
   - Repeat each cell more than once and report the observed variation across repetitions
   - Capture hardware identity, driver version, and runtime version once per run
   - Continue the matrix when one cell fails, recording that cell's failure rather than aborting the run
@@ -240,7 +240,7 @@
   - _Requirements: 6.6, 6.7_
   - _Boundary: BenchmarkHarness_
 
-- [ ] 6.5 (P) Measure reduced-precision fidelity and cross-backend equivalence
+- [x] 6.5 (P) Measure reduced-precision fidelity and cross-backend equivalence - **DESCOPED 2026-09-07**
   - Compare NPU-produced vectors against full-precision CPU reference vectors for identical inputs
   - Compare isolated-backend vectors against in-process vectors where the isolated path exists, expecting exact agreement given a shared graph and shared post-processing
   - Observable: fidelity against the full-precision reference is reported as a similarity distribution rather than a single number, and any cross-backend divergence is surfaced as a defect rather than absorbed into a tolerance
@@ -248,7 +248,7 @@
   - _Boundary: bench fidelity_
   - _Depends: 6.3_
 
-- [ ] 6.6 (P) Score retrieval quality per candidate model
+- [x] 6.6 (P) Score retrieval quality per candidate model - **DESCOPED 2026-09-07**
   - Rank the fixture sample against the fixture query set in memory, without any persistent index
   - Score each candidate model so the energy-versus-quality trade-off is visible rather than assumed
   - Observable: a model whose dense stage is omitted scores visibly worse, confirming the measurement detects semantically broken vectors that shape and norm checks cannot
@@ -256,7 +256,7 @@
   - _Boundary: bench quality_
   - _Depends: 6.3_
 
-- [ ] 6.7 Render the benchmark document
+- [x] 6.7 Render the benchmark document - **DESCOPED 2026-09-07**
   - Present every recorded measurement with NPU and CPU side by side so the throughput and energy difference is directly readable
   - State the methodology, covering power sampling, sample selection, and repetition count
   - State a recommended default model with its reasoning, and the conditions under which a different candidate would be better
@@ -268,9 +268,9 @@
   - _Boundary: BenchmarkReport_
   - _Depends: 6.4, 6.5, 6.6_
 
-- [ ] 7. Integration and deliverable production
+- [x] 7. Integration and deliverable production - **DESCOPED 2026-09-07**
 
-- [ ] 7.1 Verify the explicit-provider contract end to end
+- [x] 7.1 Verify the explicit-provider contract end to end - **DESCOPED 2026-09-07**
   - Exercise the full path from capability check through preparation to embedding, under each provider selection
   - Confirm that an explicit NPU request on a machine with the NPU made unavailable produces no vectors at all
   - Confirm that automatic selection reports its fallback reason and still names the serving provider on success
@@ -278,7 +278,7 @@
   - _Requirements: 2.2, 2.6_
   - _Depends: 5.3, 4.3_
 
-- [ ] 7.2 Execute the full benchmark and produce the written deliverable
+- [x] 7.2 Execute the full benchmark and produce the written deliverable - **DESCOPED 2026-09-07**
   - Run the complete matrix on the target machine and render the document from the recorded results
   - **This task owns the expensive run (scope split from 6.3, 2026-09-07).** Budget **2.5-5+ hours** and several GB of downloads: all three models need a cold NPU compile, measured at 2953 s for the 573 MB candidate and unknown-but-larger for EmbeddingGemma at 1.22 GB, which has never been compiled. EmbeddingGemma is licence-gated, so acceptance must already be in place. Run it with the machine otherwise idle - a concurrent load makes `xrt-smi` polls ~6x slower and empties whole telemetry bursts, which would corrupt the energy column.
   - Confirm the recommended default is supported by the measured figures rather than by prior assumption
@@ -286,16 +286,16 @@
   - _Requirements: 6.1, 7.1, 7.3_
   - _Depends: 6.7, 7.1_
 
-- [ ] 8. Validation
+- [x] 8. Validation - **DESCOPED 2026-09-07**
 
-- [ ] 8.1 Verify the tokenizer contract against a content sample
+- [x] 8.1 Verify the tokenizer contract against a content sample - **DESCOPED 2026-09-07 - but see the closure note; document-ingest will want this**
   - Assert that consumer-side token counting and the service's truncation decision agree for the same text and kind across a sample of real content
   - Cover text that sits near the compiled length boundary, where prefix overhead decides the outcome
   - Observable: agreement holds across the sample, establishing the contract the document-ingest spec will size its chunks against
   - _Requirements: 3.8_
   - _Depends: 5.1, 5.3_
 
-- [ ] 8.2 (P) Verify artifact lifecycle and preparation failure handling
+- [x] 8.2 (P) Verify artifact lifecycle and preparation failure handling - **DESCOPED 2026-09-07**
   - Confirm each manifest field independently forces a rebuild, and that a warm run reports reuse
   - Confirm an interrupted preparation leaves nothing a later run treats as valid
   - Confirm gated acquisition without accepted terms raises the licensing error rather than a transport error
@@ -304,7 +304,7 @@
   - _Boundary: ArtifactStore_
   - _Depends: 3.3_
 
-- [ ] 8.3 (P) Verify error categorization and padding-sensitive pooling
+- [x] 8.3 (P) Verify error categorization and padding-sensitive pooling - **DESCOPED 2026-09-07**
   - Confirm the three error categories are separable by type and that each instance carries provider, model, and stage
   - Confirm masked mean pooling ignores padding under fixed-length inputs, comparing against a hand-computed reference
   - Confirm repeated embedding of identical text returns identical vectors
@@ -313,7 +313,7 @@
   - _Boundary: postprocess, errors_
   - _Depends: 5.2, 2.1_
 
-- [ ] 8.4 (P) Harden the remaining prose assertions across `bench/`
+- [x] 8.4 (P) Harden the remaining prose assertions across `bench/` - **DESCOPED 2026-09-07**
   - Added 2026-09-07 on review's recommendation, which asked for a real task rather than a note. Task 6.3 found the same defect at **four successive depths** and each of the three parties working on it introduced one - see the standing lesson's rule 9. 6.3's own two files were swept; the sibling files were correctly left alone as another task's boundary.
   - Sweep `tests/embedding/bench/test_power.py` and `tests/embedding/bench/test_corpus.py` for assertions that test a string for mere presence. `test_power.py`'s `assert "1" in measured.methodology` is **the weakest assertion of this family anywhere in the suite** - satisfied by any string containing the digit one - and `"unsupported" in reason.lower()` is the same shape on a constant whose whole purpose is to be distinguishable from three siblings.
   - Use a broader pattern than `assert "…" in`: 6.3's first sweep missed a bare-truthiness check (`assert x.unavailable_reason`) precisely because the grep could not match it.
@@ -321,6 +321,22 @@
   - _Requirements: 6.2, 6.8_
   - _Boundary: bench tests_
   - _Depends: 6.1, 6.2_
+
+## Spec closed 2026-09-07 - benchmark descoped, EmbeddingGemma is the default
+
+**Decision by the project owner.** The benchmark existed to choose a default model from measured evidence (requirement 7.3). That choice is made instead by judgement: **`embeddinggemma-300m` is the default, permanently.** No code change was needed - `profiles.py` already declares `INITIAL_DEFAULT_MODEL = "embeddinggemma-300m"` with `initial_default_profile()`, per requirement 4.2's "initial default candidate **until the benchmark document supersedes that choice**". Nothing will now supersede it, so read "initial" as "final" unless a later effort revives 6.x.
+
+**Rationale.** The runtime works: NPU execution is confirmed on hardware at 99.7% operator offload, three models are declared, the service is assembled, 1359 tests pass. The remaining benchmark work was instrumentation for a decision, not a step toward a working system - and the project's actual goal (embed a document archive, search it from a CLI and an MCP server) needs `document-ingest`, `vector-index`, `search-cli` and `mcp-server`, none of which existed. 6.4-6.7 plus 7.2 would have cost another long session and a 2.5-5 hour compile-and-benchmark run before anything became user-facing.
+
+**What shipped and remains useful.** 6.1's committed corpus fixture, 6.2's energy sampler with its three-state power model, and 6.3's `BenchmarkHarness` are all complete, reviewed and tested. **If the benchmark is ever revived, the instrumentation is already built** - what is missing is repetition/variance/failure-tolerance (6.4), fidelity and quality scoring (6.5, 6.6), the report renderer (6.7), and the run itself (7.2). Task 6.4's RED tests exist but were never implemented; they are in `git stash` ("task 6.4 RED tests only", stashed 2026-09-07).
+
+**Consequences of the default that downstream specs must handle.**
+- `embeddinggemma-300m` is **licence-gated**. Acquisition needs the HF token in the gitignored `.env`; `document-ingest` inherits that.
+- It **has a Dense stage**, and `EmbeddingService.__init__` refuses to construct without the layers (task 5.4's guard). Any consumer must pass `dense=load_dense_layers(...)`, or - better - use `build_service`, which wires it. Omitting it yields correctly-shaped, correctly-normalised, semantically **wrong** vectors that no shape or norm check catches.
+- It has **never been NPU-compiled**. At 1.22 GB it is the largest candidate, and the one measured comparison point is 2953 s for a 573 MB model, so **the first real NPU run will pay a cold compile of an hour or more, once.** Warm reuse is 0.59 s thereafter.
+- Its vectors are **768-dimensional**. `.kiro/specs/vector-index/brief.md` still sizes the corpus "at 1024 dimensions" - a figure no remaining candidate has. Fix that before sizing the index.
+
+**Validation deliberately not run.** 7.1 and 8.1-8.3 were closed with the rest. Two are worth reviving cheaply if the runtime ever misbehaves under real use: **8.1** verifies that a consumer's token count and the service's truncation decision agree - and its own Observable says it "establishes the contract the `document-ingest` spec will size its chunks against", so it is the one piece of skipped validation that directly protects the next spec; **8.3** pins masked-mean pooling against padding and needs no hardware at all. Neither is blocking, and both are a short session each.
 
 ## Implementation Notes
 - 1.1: canonical validation set = `uv sync`, `uv run pytest`, `uv run mypy`, `uv run python -c "import npu_rag.embedding"`; vendor group via `uv sync --group npu`.
