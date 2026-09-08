@@ -1,0 +1,168 @@
+# Implementation Plan
+
+Conventions that bind every task below, inherited from `npu-embedding-runtime` and recorded there in detail:
+
+- **Never run a bare `uv sync`.** It drops the `npu` dependency group and de-provisions the NPU. Install through `uv run python -m tools.provision_npu`, which performs the group-aware sync and re-applies the vendor DLL relocation.
+- **PowerShell and Windows core tools only** — no Git Bash, msys or cygwin.
+- **The standing lesson applies** (`npu-embedding-runtime/tasks.md`, rules 1–10): fixtures must be able to tell right from wrong, a guard is proved by planting its negation, live-only coverage is no coverage, and prose is pinned by claim, not keyword.
+- **Only image-to-text leaves the machine.** The layer guard makes any second exit path a test failure; it is a decision, not a default.
+
+- [ ] 1. Foundation: package, dependencies, shared contracts, guard, offline tokenizer
+- [ ] 1.1 Establish the ingest package and declare its dependencies
+  - Create the sibling package beside the embedding runtime with an empty public surface; add `openpyxl`, `pypdfium2`, `pillow` to the default dependency set and declare `httpx` and `markdown-it-py` explicitly there (both currently only transitive); gitignore the default state-file path
+  - Install by running the runtime's provisioning tool, which performs the group-aware sync and then re-applies the vendor DLL relocation and the runtime replacement check — never a bare `uv sync`, and not `uv sync --group npu` alone, since a re-resolve re-strands the backend libraries
+  - Citation note: 10.1 is discharged by 7.2 and 8.2; this task's true anchor is design.md's Modified Files. The id is retained so coverage tooling stays whole
+  - Observable: the package imports, the full existing suite stays green, and the runtime's provider check still reports the NPU registered afterwards
+  - _Requirements: 10.1_
+- [ ] 1.2 Define the domain types and the error taxonomy
+  - Source file, the locator kinds, the segment kinds including the image reference, the chunk kind enumeration, the chunk record with a JSON round-trip, the omission record and the run report; errors carrying a stage and a path
+  - Invariants enforced at construction: a figure chunk carries provenance and no other kind does; an omission names a missing capability exactly when its category is vision-unavailable; a resolved image is exactly one of figure or omission
+  - Observable: each invariant-violating construction is refused by a test that plants it; a record survives serialise-then-parse unchanged
+  - _Requirements: 5.8, 7.1, 7.3, 9.4_
+- [ ] 1.3 Package-wide layer guard, seeded with the complete dependency direction
+  - Seed the rank table with design.md's full order — types and errors, config, credential, identity, state, discover, route, extract as one rank, vision, chunk and report, pipeline — before any of those modules exist, so later tasks add files without editing the table
+  - Enforce leftward-only imports; assert by name that only the vision module imports the HTTP client and that extraction modules never import the vision or state modules, since a module inside the extract subpackage inherits its rank and a rank check alone cannot see an intra-subpackage violation
+  - Observable: a decoy planted at the package top level with an upward import fails the guard by name; a decoy inside the extract subpackage importing the vision module fails the name-based assertion; removing both restores green
+  - _Requirements: 10.2, 10.3_
+- [ ] 1.4 (P) Define configuration with validation
+  - One frozen configuration object: roots (at least one), include and exclude patterns, token budget, prose overlap, page-text threshold, image-size threshold, vision model id, vision base URL, vision concurrency, state path, with design.md's defaults
+  - Observable: an empty root list, a non-positive budget, or an overlap at or above the budget is refused at construction
+  - _Requirements: 1.1, 1.3, 2.5, 5.3, 5.7, 6.1, 6.4_
+  - _Boundary: IngestConfig_
+- [ ] 1.5 (P) A vision credential that cannot render itself
+  - Mirror the runtime's credential object, importing its dotenv helpers and redaction marker from the runtime's acquisition module by submodule path; that module imports the Hub client at import time and issues no request, which is accepted; the secret is reachable only through one reveal method; string and repr forms and any traceback yield the redaction marker; discovery reads the environment variable or the nearest dotenv file
+  - Observable: a test that renders the credential every ordinary way and searches the output for the secret finds nothing
+  - _Requirements: 10.4, 10.5_
+  - _Boundary: OpenRouterCredential_
+- [ ] 1.6 (P) Offline tokenizer fixture
+  - Commit the tokenizer files of the ungated, Apache-2.0 third candidate model under the test fixtures and expose one session fixture that loads a real runtime tokenizer from them with no network; fail loudly, never skip, if the files are absent
+  - Observable: the fixture yields a runtime tokenizer whose limit equals the compiled length, with the network unreachable
+  - _Requirements: 6.2, 6.7_
+  - _Boundary: test fixtures_
+
+- [ ] 2. Identity and persisted state
+- [ ] 2.1 Fingerprints and chunk identity
+  - A parameter fingerprint over every output-affecting parameter including the tokenizer identity, extractor versions, and the vision model and prompt version; a file content hash; a chunk identifier derived only from file-local inputs
+  - The vision model id and prompt version arrive as arguments, never by importing the vision module — it sits to the right of identity in the rank table and the guard would refuse the import
+  - Observable: changing any listed parameter changes the fingerprint and changing nothing else leaves it identical; a change to an unrelated file leaves every chunk identifier unchanged
+  - _Requirements: 7.4, 7.5, 8.2, 8.5_
+- [ ] 2.2 File state and chunk registry with per-file atomic commits
+  - File state and the chunk registry, which stores each serialised record, in one SQLite file at the configured path; classify a file as new, changed or unchanged before any extraction; commit a file's state and its records in one transaction stamped with the run id; return the retained records of an unchanged file; report files absent since the previous run, with their chunk ids, by comparing run-id stamps
+  - Observable: a simulated crash between two files leaves the first committed and the second classified as new on reopen; a second identical run classifies every file unchanged and returns its records without extraction
+  - _Requirements: 8.1, 8.3, 8.4_
+- [ ] 2.3 Vision cache
+  - Cache lookups and stores keyed by image hash, model id and prompt version, in the same file, safe from worker threads under a lock; a hit is returned without any other side effect
+  - Observable: a stored description is returned for the same key from a second thread and is absent for any key differing in one component
+  - _Requirements: 5.4, 5.5_
+
+- [ ] 3. Discovery and routing
+- [ ] 3.1 Discoverer
+  - Walk every configured root recursively with long-path support on Windows, apply include and exclude rules, de-duplicate files reached through overlapping roots by resolved path, derive the author from the first directory beneath the root, and record an unreadable root as an omission while continuing
+  - Observable: two overlapping roots yield one source file per file; a non-ASCII path longer than the traditional limit is enumerated; a missing root produces one omission and the others are still walked
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 7.2_
+- [ ] 3.2 (P) Router
+  - Select the extraction path from the extension together with a content sniff — PDF magic bytes, the zip signature for workbooks, an image header — and return a path token only; the token-to-adapter table belongs to the pipeline; record anything unmatched as an unsupported omission
+  - Observable: a file with a misleading extension is routed by its content, and an unknown type appears in the report with its path
+  - _Requirements: 2.1, 2.4_
+  - _Boundary: Router_
+
+- [ ] 4. Extraction
+- [ ] 4.1 Extractor protocol, normalisation, and the plain-text reference adapter
+  - The extractor protocol and its result type; Unicode normalisation and whitespace collapsing as a pure function that never alters words; the plain-text adapter as the smallest conforming implementation
+  - Observable: a fixture with mixed Unicode forms and redundant whitespace normalises to a literal expected string with every word intact
+  - _Requirements: 3.3_
+  - _Boundary: extract base_
+- [ ] 4.2 (P) Markdown extractor
+  - Parse the token stream; drop front matter, HTML blocks and image syntax; maintain the heading path in reading order; emit tables as table segments; emit each image reference anchored to its enclosing block's line range and ordinal, resolved relative to the file; record the document title
+  - Fixture: front matter, an HTML block, a heading hierarchy, a table, images with and without alt text
+  - Observable: the fixture yields the expected heading paths, one table segment, and image references whose anchors point at the right lines; no emitted text contains markup
+  - _Requirements: 3.1, 3.2, 3.5_
+  - _Boundary: MarkdownExtractor_
+- [ ] 4.3 (P) PDF extractor with per-page routing
+  - For each page, compare extractable text against the configured threshold; at or above, emit prose in content-stream order with the page locator; below, render the page and emit an image reference carrying the page locator
+  - Fixture: one page with a text layer and one textless page, committed small
+  - Observable: the text page produces prose and no image reference; the textless page produces an image reference and no prose; every segment carries its page
+  - _Requirements: 2.2, 2.3, 2.5, 3.4, 7.3_
+  - _Boundary: PdfExtractor_
+- [ ] 4.4 (P) Excel block segmentation, sheet handling, and the workbook fixture
+  - Build the complete fixture workbook to design.md's specification through a committed generator script — two blank-separated blocks, a merged label spanning three rows, a formula with a cached value and one without, a hidden sheet, one chart, one image — so later tasks consume it read-only
+  - Treat a run of entirely empty rows as the block boundary, where a row is empty only if every cell is empty and no valued merged range covers it; carry each block's label, period header row and row labels; skip hidden sheets as named omissions; attach the sheet and cell range to every block
+  - Observable: the fixture yields exactly two blocks with the expected ranges; a naive all-empty-cells rule planted in place of the merged-aware rule splits the merged label and fails; the generator reproduces the committed workbook byte for byte
+  - _Requirements: 4.1, 4.2, 4.8, 7.3_
+  - _Boundary: ExcelExtractor_
+- [ ] 4.5 Excel values and formulas
+  - Load the workbook once for cached values and once for formula text; emit each formula cell's computed value inside its block and its formula text as a formula segment; record a formula cell with no cached value as an unavailable-value omission with its reason, never substituting a value; the fixture from 4.4 is read only
+  - Observable: the block carries the cached number, the formula segment carries the formula text, and the uncached cell appears as an omission naming the cell
+  - _Requirements: 4.4, 4.5_
+- [ ] 4.6 Excel anchored images and charts
+  - One adapter function over the library's private anchored-object attributes; emit an image reference for each anchored image and each chart; read each chart's series source ranges directly and attach them to its reference; pin the library version; the fixture from 4.4 is read only
+  - Observable: the chart's source ranges are present on its reference without any image-to-text call; the smoke test fails loudly if the private attributes change
+  - _Requirements: 4.6, 4.7_
+- [ ] 4.7 (P) Standalone image extractor and the image fixtures
+  - Commit the image fixture pair — a chart above the size threshold and an icon below it; read dimensions and MIME from the header, load bytes, emit one image reference with the image-file locator
+  - Observable: the chart fixture yields a reference with the correct width, height and MIME; the icon fixture yields one whose shorter side is below the default threshold
+  - _Requirements: 5.3, 7.3_
+  - _Boundary: ImageExtractor_
+
+- [ ] 5. The vision seam
+- [ ] 5.1 Image resolution with gates, cache, and bounded fan-out
+  - Define the prompt text and its version as paired module constants here — changing one without the other is a review failure — so identity and the cache key can be handed the version as a value
+  - Resolve each image reference in the order threshold, cache, credential, describe, store; produce a figure segment carrying the model id and prompt version, or an omission whose category says which gate closed and, for a missing credential, names the capability; a null describer never raises
+  - A batch entry point owns the bounded worker pool and the per-image timeout over a file's cache misses, preserving order; the describer is only ever asked for one image at a time
+  - Observable: with a fake describer, a below-threshold image never reaches it; a cache hit never reaches it; without a credential every above-threshold image becomes a vision-unavailable omission; the count of below-threshold images is reported; the fake records its maximum in-flight count and it never exceeds the configured concurrency
+  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 9.4_
+  - _Depends: 2.3, 4.7_
+- [ ] 5.2 OpenRouter describer
+  - The single outbound call for one image: a text part carrying the versioned prompt then one image part as a base64 data URL; temperature zero without assuming determinism; honour Retry-After on 429 and retry once; treat 401 or 403 as vision unavailable for the rest of the run; wrap transport errors so no chained traceback carries headers; reveal the credential at exactly one line
+  - Observable: against a mock transport, the request body matches the documented shape; a 429 with Retry-After is retried after the wait; a 401 latches; the rendered text of every raised error is free of the secret
+  - _Requirements: 5.6, 5.7, 10.2, 10.3, 10.4, 10.5_
+  - _Depends: 1.5_
+
+- [ ] 6. Chunking
+- [ ] 6.1 Measurement, policy, and record assembly
+  - Measure every candidate with the document title attached under the document convention; refuse construction if the budget disagrees with the tokenizer's limit; declare the overlap policy for every chunk kind; assemble records with chunk ids and token counts
+  - Observable: a fixture whose content alone fits the budget but whose content plus title does not is reported as over budget; a test fails if a chunk kind exists without an overlap policy entry
+  - _Requirements: 6.1, 6.2, 6.5, 7.1_
+  - _Depends: 1.6, 2.1_
+- [ ] 6.2 Prose accumulation, heading-first splitting, and overlap
+  - Accumulate paragraphs up to the budget, splitting at a heading-path change first; apply the configured overlap between consecutive prose chunks only; tables and figures pass through as single non-overlapping chunks
+  - Observable: a fixture with two headings splits at the heading before the budget is reached; consecutive prose chunks share exactly the configured overlap; a table chunk shares nothing with its neighbours; no emitted chunk exceeds the tokenizer's limit
+  - _Requirements: 6.3, 6.4, 6.6_
+- [ ] 6.3 Block splitting and indivisible-unit truncation
+  - Split an oversize block by rows repeating its label and header row in every piece; truncate a single indivisible unit at a token boundary and mark the chunk truncated rather than dropping content
+  - Observable: an oversize block fixture yields pieces that each begin with the label and header and together cover every row once; an oversize single paragraph yields one chunk marked truncated that fits the limit
+  - _Requirements: 4.2, 4.3, 6.3_
+
+- [ ] 7. Orchestration and reporting
+- [ ] 7.1 (P) Run report
+  - Counts by file status and by omission category; every omission by path and reason with the missing capability named where one applies; removed chunk ids; the no-work-required flag; vision requests issued versus served from cache; a human-readable rendering
+  - Observable: a rendered report for a mixed run lists every skipped and failed file with its reason and states the totals
+  - _Requirements: 1.4, 2.4, 5.2, 5.3, 8.4, 8.6, 9.2, 9.3, 9.4_
+  - _Boundary: report_
+- [ ] 7.2 Pipeline and public surface
+  - The single entry point taking the configuration, the runtime tokenizer and an optional describer; own the path-token-to-adapter table; classify before extract; re-emit an unchanged file's records from the store; run route, extract, resolve, chunk and commit for new and changed files; convert any per-file error into a failed omission and continue, letting keyboard interrupt through; abort before any file on a state-store failure; compute the deleted set at the end; return the report carrying every current record; export the public contracts from the package root
+  - Observable: a root with one corrupt file completes with that file as a failed omission and every other file committed; a run where every file fails still returns a report; the report's records include the unchanged files' retained records
+  - _Requirements: 8.3, 8.6, 9.1, 9.5, 10.1_
+  - _Depends: 2.2, 3.1, 3.2, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 5.1, 6.1, 6.2, 6.3, 7.1_
+
+- [ ] 8. Validation
+- [ ] 8.1 Incremental behaviour end to end
+  - Run over a temporary root twice: the second run extracts nothing, issues no describer call, reports no work required, and its report still carries every record from the store; delete a file and its chunk ids are reported removed; change one parameter and affected files are reclassified changed; add one file and only it is processed
+  - Observable: across the four scenarios the extractor and describer fakes record exactly the calls the scenario permits and no others, and each report's counts and removed ids match the literal expected values
+  - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
+- [ ] 8.2 (P) Offline and absent-credential behaviour
+  - With no credential, every image reference is a vision-unavailable omission naming the capability and the run completes; install a transport that fails on any request and prove none is made — the proof is about requests issued, not the import set, so the runtime's transitive Hub import cannot fail it; assert no provider or session module from the runtime is imported
+  - Observable: the failing transport's request counter reads zero after a full run, the report lists every image by path under vision-unavailable with the capability named, and the loaded-module set contains no runtime provider or session module
+  - _Requirements: 5.2, 9.4, 10.1, 10.2, 10.3, 10.5_
+  - _Boundary: offline validation_
+- [ ] 8.3 (P) Token contract with the runtime, both directions
+  - For a sample drawn from the runtime's committed corpus fixture, a measurement within budget implies the runtime does not truncate that input and a measurement over budget implies it does; run unconditionally against the offline tokenizer fixture, failing rather than skipping, and opt-in against the gated default model
+  - Observable: the sample contains inputs on both sides of the budget, and for every one the ingest measurement and the runtime's truncated-index set agree — with a non-vacuity control asserting the sample is not all on one side
+  - _Requirements: 6.7_
+  - _Boundary: token contract_
+  - _Depends: 1.6_
+- [ ] 8.4 (P) Failure isolation across a mixed root
+  - A root holding a corrupt PDF, a malformed workbook and an undecodable image among good files: each bad file is a failed omission with its reason, the run completes, good files are committed; a root where every file is bad still yields a report with counts
+  - Observable: the report lists exactly the three bad files under failed with a reason naming each file's format, the state store holds a committed row for every good file and none for the bad ones, and the all-bad root returns a report whose failed count equals its file count
+  - _Requirements: 9.1, 9.2, 9.3, 9.5_
+  - _Boundary: failure isolation_

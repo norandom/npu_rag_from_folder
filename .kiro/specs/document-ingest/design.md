@@ -42,7 +42,7 @@
 - Any second spreadsheet reader, any OCR model, any per-figure captioning beyond the one describer call.
 
 ### Allowed Dependencies
-- `npu_rag.embedding` — `ModelTokenizer`, `DocumentText`, `TextKind`, `MISSING_TITLE_SENTINEL`, `find_dotenv`, `parse_dotenv`, `REDACTED`. This is the intended direction; the runtime's own guard forbids the reverse and stays untouched.
+- `npu_rag.embedding` — `ModelTokenizer` (`.tokenize`), `DocumentText` and `TextKind` (`.types`), `MISSING_TITLE_SENTINEL` (`.profiles`), and `find_dotenv`, `parse_dotenv`, `REDACTED` (`.models.acquire`). The runtime's package root exports nothing, so these are imported by submodule path. `models.acquire` imports `huggingface_hub` at module scope; that transitive import is **accepted** — it issues no request at import time, and the tokenizer the caller hands in is loaded through the same module regardless. This is the intended direction; the runtime's own guard forbids the reverse and stays untouched.
 - Standard library: `sqlite3`, `hashlib`, `pathlib`, `json`, `base64`, `concurrent.futures`.
 - Third-party, declared in `[project]`: `markdown-it-py` (already transitively installed), `httpx` (already transitively installed), `openpyxl`, `pypdfium2`, `pillow`.
 - Network: **only** `vision.py` may open a connection, and only to the configured OpenRouter base URL. No other module imports `httpx`.
@@ -153,17 +153,25 @@ src/npu_rag/ingest/
 
 tests/ingest/
 ├── test_package_baseline.py   # layer guard for npu_rag.ingest; extract/* may not import vision; only vision imports httpx
-├── test_types.py, test_errors.py, test_config.py, test_credential.py, test_identity.py, test_state.py, test_route.py
+├── test_types.py, test_errors.py, test_config.py, test_credential.py, test_identity.py, test_state.py, test_discover.py, test_route.py, test_report.py
 ├── extract/test_markdown.py, test_text.py, test_pdf.py, test_excel.py, test_image.py
 ├── test_vision.py             # fake describer; OpenRouterDescriber over httpx MockTransport; 429 and Retry-After; redaction
 ├── test_chunk.py              # budget, overlap policy, heading split, block split; measured with the title attached
-├── test_pipeline.py           # per-file isolation, no-op re-run, deletion reporting, absent credential
-├── test_token_contract.py     # requirement 6.7 both ways against the real runtime tokenizer
+├── conftest.py                # the offline tokenizer fixture: a real, ungated tokenizer loaded from committed files, never from the network
+├── test_pipeline.py           # per-file isolation and the entry point
+├── test_incremental.py        # no-op re-run, deletion reporting, parameter reclassification
+├── test_offline.py            # absent credential, zero requests, no runtime provider imports
+├── test_failure_isolation.py  # a mixed root of corrupt files; an all-bad root
+├── test_token_contract.py     # requirement 6.7 both ways; unconditional against the offline tokenizer, opt-in against the gated default
 └── fixtures/
+    ├── tokenizer/             # committed tokenizer files for gte-modernbert-base, Apache-2.0 and ungated, so 6.7 can never skip
     ├── markdown/              # front matter, HTML, tables, images with and without alt text
     ├── pdf/                   # a text-layer page and a textless page
-    ├── excel/                 # models.xlsx: blank-row blocks, a merged label spanning rows, formulas with and without cached values, a hidden sheet, one chart, one image
+    ├── excel/                 # models.xlsx built by a committed generator: blank-row blocks, a merged label spanning rows, formulas with and without cached values, a hidden sheet, one chart, one image
     └── images/                # a chart above the threshold and an icon below it
+```
+*(Test layout corrected 2026-09-08 at task planning: the four pipeline-level concerns were one file, which made their tasks unsafe to run in parallel; and the 6.7 contract test had no tokenizer it could run against offline — every real tokenizer in the runtime's suite sits behind a network-gated skip.)*
+```
 ```
 
 ### Modified Files
@@ -352,7 +360,8 @@ Segment = ProseSegment | TableSegment | BlockSegment | FormulaSegment | ImageRef
 **Responsibilities & Constraints**
 - Resolution order per `ImageRef`: threshold (5.3) → cache (5.5) → credential (5.2) → describe (5.1) → cache store (5.4). Each refusal is an `Omission` with its own category, so the report can say which gate closed.
 - `OpenRouterDescriber` is the **only** module that imports `httpx` and the only module that may open a connection (10.3, guarded). Request: `POST {base_url}/chat/completions` with a text part (the versioned prompt) then one `image_url` part carrying a base64 data URL; `temperature=0` for stability, without assuming determinism.
-- Honours `Retry-After` on 429; bounded concurrency (`vision_concurrency`, default 4); per-image timeout. 401/403 marks vision unavailable **for the rest of the run** rather than retrying every image (10.5). Any other failure is a per-image `VisionError` (5.6).
+- Honours `Retry-After` on 429 and a per-image timeout. 401/403 marks vision unavailable **for the rest of the run** rather than retrying every image (10.5). Any other failure is a per-image `VisionError` (5.6). The describer handles **one image per call**; fan-out is not its concern.
+- **Concurrency is owned by resolution, not the describer.** `resolve_all` runs the bounded pool (`vision_concurrency`, default 4) over the cache misses of a file's `ImageRef`s, so the in-flight bound holds across images. A single-image describer cannot bound anything across images, which is why the pool lives one level up. *(Corrected 2026-09-08 at task planning.)*
 - The credential is revealed at exactly one line, inside the request construction; `httpx` exceptions are re-raised as `VisionError` **`from None`** so no chained traceback carries headers (10.4).
 
 **Dependencies**
@@ -374,6 +383,9 @@ class Resolved:
 
 def resolve(ref: ImageRef, *, store: StateStore, describer: VisionDescriber | None,
             config: IngestConfig) -> Resolved: ...
+
+def resolve_all(refs: Sequence[ImageRef], *, store: StateStore, describer: VisionDescriber | None,
+                config: IngestConfig) -> tuple[Resolved, ...]: ...   # owns the bounded pool; order preserved
 ```
 - Preconditions: `ref.width`/`ref.height` known.
 - Postconditions: on success the returned `FigureSegment.provenance` names the model id and `PROMPT_VERSION`; on any refusal `omission.category` is one of `BELOW_THRESHOLD`, `VISION_UNAVAILABLE`, `VISION_FAILED`.
@@ -438,7 +450,7 @@ OVERLAP_POLICY: Final[dict[ChunkKind, bool]] = {
 **Contracts**: State [x]
 
 ##### State Management
-- State model: three tables in one SQLite file — `file_state(root_id, relative_path, content_hash, params_fingerprint, status, last_seen_run)`, `chunk_registry(chunk_id, root_id, relative_path)`, `vision_cache(image_sha256, model_id, prompt_version, text, created_at)`.
+- State model: three tables in one SQLite file — `file_state(root_id, relative_path, content_hash, params_fingerprint, status, last_seen_run)`, `chunk_registry(chunk_id, root_id, relative_path, record_json)`, `vision_cache(image_sha256, model_id, prompt_version, text, created_at)`. *(Corrected 2026-09-08 at task planning: the registry originally held ids only, which made requirement 8.3's "reuse the previously emitted records" impossible — an unchanged file could contribute ids but not records. The full `ChunkRecord` is now persisted as JSON, so an unchanged file is re-emitted from the store without extraction. This feature still stores no vectors.)*
 - Persistence & consistency: one transaction per file covering `file_state` and its `chunk_registry` rows; a run id stamps `last_seen_run`, and files whose `last_seen_run` is older than the current run at the end are the deleted set (8.4).
 - Concurrency strategy: single writer; the vision cache is read and written under the same connection from the describer's worker threads via a lock. Two simultaneous ingest processes are unsupported and detected by SQLite's lock.
 
@@ -446,7 +458,8 @@ OVERLAP_POLICY: Final[dict[ChunkKind, bool]] = {
 ```python
 class StateStore:
     def classify(self, file: SourceFile, content_hash: str, params: ParamsFingerprint) -> FileStatus: ...
-    def commit_file(self, file: SourceFile, content_hash: str, params: ParamsFingerprint, chunk_ids: Sequence[str], run_id: str) -> None: ...
+    def commit_file(self, file: SourceFile, content_hash: str, params: ParamsFingerprint, records: Sequence[ChunkRecord], run_id: str) -> None: ...
+    def records_for(self, file: SourceFile) -> tuple[ChunkRecord, ...]: ...   # an unchanged file's retained records, re-emitted without extraction (8.3)
     def deleted_since(self, run_id: str) -> tuple[tuple[SourceFile, tuple[str, ...]], ...]: ...
     def cached_description(self, image_sha256: str, model_id: str, prompt_version: str) -> str | None: ...
     def store_description(self, image_sha256: str, model_id: str, prompt_version: str, text: str) -> None: ...
@@ -466,7 +479,7 @@ class StateStore:
 ##### Batch / Job Contract
 - Trigger: `run_ingest(config: IngestConfig, tokenizer: ModelTokenizer, *, describer: VisionDescriber | None = None) -> RunReport`. The caller passes the runtime's tokenizer; the pipeline builds the describer from the discovered credential unless one is injected (tests inject a fake).
 - Input / validation: `IngestConfig` validated at construction; `budget` cross-checked against the tokenizer.
-- Output / destination: `RunReport` (counts, omissions, removed chunk ids, `no_work_required`) returned in memory and rendered by `report.render`; `ChunkRecord`s yielded to the caller via `RunReport.records` — this feature stores none of them.
+- Output / destination: `RunReport` (counts, omissions, removed chunk ids, `no_work_required`) returned in memory and rendered by `report.render`. `RunReport.records` carries **every current record** — those extracted this run for new and changed files, and those re-emitted from the state store for unchanged files (8.3) — so a consumer can rebuild from one run's output. Vectors are never stored here.
 - Idempotency & recovery: a re-run is a no-op for unchanged files by construction; a crash leaves committed files committed and uncommitted files classified as new; the vision cache survives crashes because it commits per image.
 - Isolation: each file is wrapped so that `IngestError` and any other `Exception` becomes `Omission(category=FAILED, reason=...)` and the loop continues; `KeyboardInterrupt` propagates.
 
@@ -514,7 +527,8 @@ CREATE TABLE file_state (
   status TEXT NOT NULL, last_seen_run TEXT NOT NULL,
   PRIMARY KEY (root_id, relative_path));
 CREATE TABLE chunk_registry (
-  chunk_id TEXT PRIMARY KEY, root_id TEXT NOT NULL, relative_path TEXT NOT NULL);
+  chunk_id TEXT PRIMARY KEY, root_id TEXT NOT NULL, relative_path TEXT NOT NULL,
+  record_json TEXT NOT NULL);   -- the serialised ChunkRecord, so unchanged files re-emit without extraction (8.3)
 CREATE INDEX chunk_registry_file ON chunk_registry (root_id, relative_path);
 CREATE TABLE vision_cache (
   image_sha256 TEXT NOT NULL, model_id TEXT NOT NULL, prompt_version TEXT NOT NULL,
@@ -545,7 +559,7 @@ The runtime's standing lesson applies: every fixture must be able to tell right 
 - **Unit — vision seam**: a fake describer proving the gate order threshold → cache → credential → describe; `OpenRouterDescriber` over `httpx.MockTransport` for payload shape, `Retry-After` handling, the 401 run-wide latch, and that no exception message or `repr` contains the key (5.x, 10.4).
 - **Unit — identity and state**: `chunk_id` unchanged when an unrelated file changes and identical across two runs (7.4, 7.5); `params_fingerprint` changes when any listed parameter changes and only then (8.2, 8.5); `deleted_since` returns exactly the files absent this run with their chunk ids (8.4).
 - **Integration — pipeline**: a temp root with mixed files where one is corrupt — the run completes, the corrupt file is a `FAILED` omission, every other file is committed (9.1, 9.5); a second identical run extracts nothing, issues no describer call, and reports `no_work_required` (8.3, 8.6); the same run with no credential reports every `ImageRef` as `VISION_UNAVAILABLE` naming the capability, and the run has no network access at all (5.2, 9.4, 10.2).
-- **Contract — requirement 6.7**: for a sample of real archive chunks, `tokenizer.count_tokens(DocumentText(text, title), DOCUMENT) <= budget` implies the index is absent from `encode_documents([...]).truncated_indices`, and `> budget` implies it is present — both directions, in the standing suite with the ungated control tokenizer, and opt-in against the gated default.
+- **Contract — requirement 6.7**: for a sample drawn from the runtime's committed corpus fixture (`tests/fixtures/benchmark-corpus/chunks.jsonl`), `tokenizer.count_tokens(DocumentText(text, title), DOCUMENT) <= budget` implies the index is absent from `encode_documents([...]).truncated_indices`, and `> budget` implies it is present — both directions. It runs **unconditionally** in the standing suite against a real, ungated tokenizer loaded from committed files (`fixtures/tokenizer/`), and it must fail loudly rather than skip if that fixture is missing; a second, opt-in run targets the gated default model. Every real tokenizer in the runtime's own suite sits behind a network-gated skip, which is exactly the coverage hole this test exists to close.
 - **Guard**: `tests/ingest/test_package_baseline.py` walks every module and asserts the dependency direction, that only `vision.py` imports `httpx`, and that `extract/*` never imports `vision` or `state` (10.3).
 
 ## Security Considerations
