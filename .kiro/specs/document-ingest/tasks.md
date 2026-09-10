@@ -56,7 +56,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 5.4, 5.5_
 
 - [ ] 3. Discovery and routing
-- [ ] 3.1 Discoverer
+- [x] 3.1 Discoverer
   - Walk every configured root recursively with long-path support on Windows, apply include and exclude rules, de-duplicate files reached through overlapping roots by resolved path, derive the author from the first directory beneath the root, and record an unreadable root as an omission while continuing
   - Observable: two overlapping roots yield one source file per file; a non-ASCII path longer than the traditional limit is enumerated; a missing root produces one omission and the others are still walked
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 7.2_
@@ -179,3 +179,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 2.1: `params_fingerprint(config, tokenizer_id, extractor_versions, prompt_version)` — prompt version is an argument, not an import of vision. `chunk_id` reuses `types._locator_to_dict` so the locator discriminator stays one vocabulary.
 - 2.2: `classify` does not stamp `last_seen_run`. Task 7.2 must call `commit_file` for unchanged files with retained records, or they will appear in `deleted_since`. `vision_cache` table is deferred to 2.3.
 - 2.3: vision_cache lives in the same SQLite file; lookups/stores take the StateStore RLock so worker threads share one connection.
+- 3.1: on Windows, `SourceFile.path` is always `\\?\`-prefixed (including short paths). Extractors must open that form. Include/exclude: `**` is recursive, `*` is one path segment; exclude wins. Author is empty when the file sits directly in the root. First overlapping root wins.
