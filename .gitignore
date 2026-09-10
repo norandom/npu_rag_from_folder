@@ -9,3 +9,7 @@ __pycache__/
 # project artifacts (large, machine-specific)
 artifacts/
 benchmarks/
+
+# ingest pipeline state (default path; machine-local)
+.npu_rag/ingest.sqlite
+

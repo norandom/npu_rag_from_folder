@@ -8,7 +8,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - **Only image-to-text leaves the machine.** The layer guard makes any second exit path a test failure; it is a decision, not a default.
 
 - [ ] 1. Foundation: package, dependencies, shared contracts, guard, offline tokenizer
-- [ ] 1.1 Establish the ingest package and declare its dependencies
+- [x] 1.1 Establish the ingest package and declare its dependencies
   - Create the sibling package beside the embedding runtime with an empty public surface; add `openpyxl`, `pypdfium2`, `pillow` to the default dependency set and declare `httpx` and `markdown-it-py` explicitly there (both currently only transitive); gitignore the default state-file path
   - Install by running the runtime's provisioning tool, which performs the group-aware sync and then re-applies the vendor DLL relocation and the runtime replacement check — never a bare `uv sync`, and not `uv sync --group npu` alone, since a re-resolve re-strands the backend libraries
   - Citation note: 10.1 is discharged by 7.2 and 8.2; this task's true anchor is design.md's Modified Files. The id is retained so coverage tooling stays whole
@@ -166,3 +166,8 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: the report lists exactly the three bad files under failed with a reason naming each file's format, the state store holds a committed row for every good file and none for the bad ones, and the all-bad root returns a report whose failed count equals its file count
   - _Requirements: 9.1, 9.2, 9.3, 9.5_
   - _Boundary: failure isolation_
+
+## Implementation Notes
+- 1.1: pytest addopts now include `--import-mode=importlib` so ingest and embedding can both keep the design-named `test_package_baseline.py`; prepend mode cannot collect both.
+- 1.1: `provision_npu`'s inner `uv sync --group npu` drops the optional `export` extra; restore with `uv sync --extra export --group npu` then `provision_npu --skip-sync`, and use `uv run --no-sync` afterwards.
+- 1.1: pre-existing `tests/tools/test_provision_npu.py::test_no_owned_file_mentions_conda` fails because `Path(__file__)` is the C:\ junction while `REPO_ROOT` resolves to D:\ — unrelated to ingest.

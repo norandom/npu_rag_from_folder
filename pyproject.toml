@@ -46,6 +46,16 @@ dependencies = [
     # dims are static and its weights FP32 before publishing. Task 3.3's
     # manifest and staleness checks read the same graphs.
     "onnx>=1.17",
+    # document-ingest. design.md Allowed Dependencies / Technology Stack:
+    # markdown-it-py and httpx are already transitive and are named here so the
+    # ingest package does not depend on an undeclared edge. openpyxl, pypdfium2
+    # and pillow are new. All five stay in the default set; none is heavyweight
+    # and Modified Files forbids a new group.
+    "markdown-it-py>=4.2",
+    "httpx>=0.28",
+    "openpyxl>=3.1.5",
+    "pypdfium2>=5.13",
+    "pillow",
 ]
 
 [project.optional-dependencies]
@@ -109,7 +119,9 @@ packages = ["src/npu_rag"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config"
+# importlib mode so ingest and embedding can both use test_package_baseline.py
+# (and later share more basenames). prepend mode cannot collect both.
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 xfail_strict = true
 # `tools/` is repo tooling, not shipped code (the wheel packages only
 # src/npu_rag), so it is reachable via the repo root rather than the install.
