@@ -78,7 +78,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: the fixture yields the expected heading paths, one table segment, and image references whose anchors point at the right lines; no emitted text contains markup
   - _Requirements: 3.1, 3.2, 3.5_
   - _Boundary: MarkdownExtractor_
-- [ ] 4.3 (P) PDF extractor with per-page routing
+- [x] 4.3 (P) PDF extractor with per-page routing
   - For each page, compare extractable text against the configured threshold; at or above, emit prose in content-stream order with the page locator; below, render the page and emit an image reference carrying the page locator
   - Fixture: one page with a text layer and one textless page, committed small
   - Observable: the text page produces prose and no image reference; the textless page produces an image reference and no prose; every segment carries its page
@@ -183,3 +183,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 3.2: sniff wins over a misleading extension. After a miss, fall back to known extensions (`.pdf`/`.xlsx`/raster/`.md`/`.txt`) so a corrupt file still reaches its extractor (8.4 FAILED, not UNSUPPORTED). True unknown types are `Omission(UNSUPPORTED)` with the path. Tokens only; the adapter table is pipeline's.
 - 4.1: `normalise` is NFC plus whitespace collapse in extract/base.py. Plain-text `MarkdownLocator` is 1-based inclusive. Task 4.2 must convert markdown-it's 0-based exclusive `token.map` rather than pass maps through.
 - 4.2: Image tokens in headings and table cells must emit ImageRefs (`_image_refs_from_children`); paragraph-only handling dropped them. Title is YAML `title:` else first heading. Missing image file raises ExtractionError for the markdown source.
+- 4.3: PdfExtractor reads `SourceFile.path` as bytes and hands them to pypdfium2; `PdfDocument(Path)` would `resolve()` and drop `\\?\`. Pages are 1-based. Threshold is `len(extractable.strip()) >= min_page_chars`.

@@ -1,0 +1,51 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 5 0 R /Resources << /Font << /F1 7 0 R >> >> >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R /Resources << >> >>
+endobj
+5 0 obj
+<< /Length 148 >>
+stream
+BT
+/F1 12 Tf
+20 150 Td
+(First sentence of extractable prose on the text page.) Tj
+0 -20 Td
+(Second sentence follows in content-stream order.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 26 >>
+stream
+20 20 260 160 re
+0.75 g
+f
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000351 00000 n 
+0000000549 00000 n 
+0000000624 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+694
+%%EOF
