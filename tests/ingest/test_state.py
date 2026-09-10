@@ -1,9 +1,12 @@
-"""Unit tests for file state and the chunk registry (task 2.2).
+"""Unit tests for file state, the chunk registry, and the vision cache.
 
-Requirements 8.1, 8.3, 8.4: classify a file as new, changed or unchanged
-from persisted content and parameter fingerprints before any extraction;
-reuse an unchanged file's records; report files absent since the previous
-run, with their chunk ids, by comparing run-id stamps.
+Requirements 8.1, 8.3, 8.4 (task 2.2): classify a file as new, changed or
+unchanged from persisted fingerprints; reuse an unchanged file's records;
+report files absent since the previous run by comparing run-id stamps.
+
+Requirements 5.4, 5.5 (task 2.3): retain an image-to-text result keyed by
+image content, model id and prompt version; a matching lookup returns that
+text and does nothing else.
 
 ``state.py`` sits to the right of identity and to the left of vision.
 These tests never import vision, and they open a temporary SQLite path
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import sqlite3
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -40,6 +44,14 @@ OTHER_PARAMS = ParamsFingerprint(digest="b" * 64)
 LOCATOR = MarkdownLocator(line_range=(1, 4), ordinal=0)
 PAGE_LOCATOR = PageLocator(page=2)
 PROVENANCE = Provenance(vision_model="test-vision", prompt_version="1")
+
+IMAGE_SHA = "c" * 64
+OTHER_IMAGE_SHA = "d" * 64
+MODEL_ID = "mistralai/mistral-small-3.2-24b-instruct"
+OTHER_MODEL_ID = "other-model"
+PROMPT_VERSION = "1"
+OTHER_PROMPT_VERSION = "2"
+DESCRIPTION = "a bar chart of quarterly revenue"
 
 
 def _imported_names(source_text: str) -> list[str]:
@@ -406,7 +418,7 @@ def test_the_same_relative_path_under_two_roots_is_independent(
 
 
 def test_schema_matches_the_physical_data_model(db_path: Path) -> None:
-    """design.md, Physical Data Model: file_state and chunk_registry."""
+    """design.md, Physical Data Model: file_state, chunk_registry, vision_cache."""
     store = StateStore(db_path)
     store.close()
 
@@ -431,9 +443,14 @@ def test_schema_matches_the_physical_data_model(db_path: Path) -> None:
             row[1]
             for row in connection.execute("PRAGMA table_info(chunk_registry)")
         ]
+        vision_cache_cols = [
+            row[1]
+            for row in connection.execute("PRAGMA table_info(vision_cache)")
+        ]
 
     assert "file_state" in tables
     assert "chunk_registry" in tables
+    assert "vision_cache" in tables
     assert file_state_cols == [
         "root_id",
         "relative_path",
@@ -443,6 +460,13 @@ def test_schema_matches_the_physical_data_model(db_path: Path) -> None:
         "last_seen_run",
     ]
     assert registry_cols == ["chunk_id", "root_id", "relative_path", "record_json"]
+    assert vision_cache_cols == [
+        "image_sha256",
+        "model_id",
+        "prompt_version",
+        "text",
+        "created_at",
+    ]
     assert "chunk_registry_file" in indexes
 
 
@@ -457,14 +481,197 @@ def test_state_store_does_not_use_the_default_path(db_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
+# Vision cache (requirements 5.4, 5.5)
+# --------------------------------------------------------------------------
+
+
+def test_a_missing_key_is_a_cache_miss(store: StateStore) -> None:
+    assert store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) is None
+
+
+def test_a_stored_description_is_returned_for_the_same_key(store: StateStore) -> None:
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, DESCRIPTION)
+    assert (
+        store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) == DESCRIPTION
+    )
+
+
+def test_a_key_differing_in_any_one_component_is_a_miss(store: StateStore) -> None:
+    """Observable: a stored description is absent for any key that differs
+    in image hash, model id, or prompt version."""
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, DESCRIPTION)
+    assert store.cached_description(OTHER_IMAGE_SHA, MODEL_ID, PROMPT_VERSION) is None
+    assert store.cached_description(IMAGE_SHA, OTHER_MODEL_ID, PROMPT_VERSION) is None
+    assert store.cached_description(IMAGE_SHA, MODEL_ID, OTHER_PROMPT_VERSION) is None
+    assert (
+        store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) == DESCRIPTION
+    )
+
+
+def test_a_cache_hit_does_not_mutate_file_state_or_the_cache_row(
+    store: StateStore, root: Path, db_path: Path
+) -> None:
+    """A hit returns the text and has no other side effect: file_state is
+    untouched and the cache row is not rewritten."""
+    source = make_source(root, "alice/notes.md")
+    store.commit_file(
+        source, "hash-a", PARAMS, (make_record(source, chunk_id="c1"),), "run-1"
+    )
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, DESCRIPTION)
+
+    with sqlite3.connect(db_path) as connection:
+        file_before = connection.execute("SELECT * FROM file_state").fetchall()
+        cache_before = connection.execute(
+            "SELECT image_sha256, model_id, prompt_version, text, created_at "
+            "FROM vision_cache"
+        ).fetchall()
+
+    assert (
+        store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) == DESCRIPTION
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        file_after = connection.execute("SELECT * FROM file_state").fetchall()
+        cache_after = connection.execute(
+            "SELECT image_sha256, model_id, prompt_version, text, created_at "
+            "FROM vision_cache"
+        ).fetchall()
+
+    assert file_after == file_before
+    assert cache_after == cache_before
+
+
+def test_a_cache_miss_does_not_insert_a_row(
+    store: StateStore, db_path: Path
+) -> None:
+    assert store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) is None
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM vision_cache").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
+def test_a_stored_description_is_returned_from_a_second_thread(
+    store: StateStore,
+) -> None:
+    """Observable: a stored description is returned for the same key from a
+    real second thread, and is absent there for any key differing in one
+    component."""
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, DESCRIPTION)
+    hit: list[str | None] = []
+    misses: list[str | None] = []
+    worker_ident: list[int] = []
+    errors: list[BaseException] = []
+
+    def lookup() -> None:
+        try:
+            worker_ident.append(threading.get_ident())
+            hit.append(
+                store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION)
+            )
+            misses.append(
+                store.cached_description(OTHER_IMAGE_SHA, MODEL_ID, PROMPT_VERSION)
+            )
+            misses.append(
+                store.cached_description(IMAGE_SHA, OTHER_MODEL_ID, PROMPT_VERSION)
+            )
+            misses.append(
+                store.cached_description(IMAGE_SHA, MODEL_ID, OTHER_PROMPT_VERSION)
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    caller = threading.get_ident()
+    thread = threading.Thread(target=lookup)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert errors == []
+    assert worker_ident == [thread.ident]
+    assert worker_ident[0] != caller
+    assert hit == [DESCRIPTION]
+    assert misses == [None, None, None]
+
+
+def test_two_threads_can_store_distinct_keys_under_the_lock(
+    store: StateStore,
+) -> None:
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def write(image_sha: str, text: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            store.store_description(image_sha, MODEL_ID, PROMPT_VERSION, text)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = (
+        threading.Thread(target=write, args=(IMAGE_SHA, "first image")),
+        threading.Thread(target=write, args=(OTHER_IMAGE_SHA, "second image")),
+    )
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert errors == []
+    assert store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) == "first image"
+    assert (
+        store.cached_description(OTHER_IMAGE_SHA, MODEL_ID, PROMPT_VERSION)
+        == "second image"
+    )
+
+
+def test_storing_the_same_key_again_replaces_the_text(store: StateStore) -> None:
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, "first")
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, "second")
+    assert store.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION) == "second"
+
+
+def test_a_stored_description_survives_reopen(db_path: Path) -> None:
+    """The cache lives in the same SQLite file and commits per image, so a
+    close and reopen still returns the stored text."""
+    store = StateStore(db_path)
+    try:
+        store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, DESCRIPTION)
+    finally:
+        store.close()
+
+    reopened = StateStore(db_path)
+    try:
+        assert (
+            reopened.cached_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION)
+            == DESCRIPTION
+        )
+    finally:
+        reopened.close()
+
+
+def test_vision_cache_row_carries_created_at(
+    store: StateStore, db_path: Path
+) -> None:
+    store.store_description(IMAGE_SHA, MODEL_ID, PROMPT_VERSION, DESCRIPTION)
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT text, created_at FROM vision_cache "
+            "WHERE image_sha256 = ? AND model_id = ? AND prompt_version = ?",
+            (IMAGE_SHA, MODEL_ID, PROMPT_VERSION),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == DESCRIPTION
+    assert isinstance(row[1], str) and row[1]
+
+
+# --------------------------------------------------------------------------
 # Boundary guard
 # --------------------------------------------------------------------------
 
 
 def test_state_does_not_import_rightward_or_vision_modules() -> None:
     """design.md, Architecture: state may import types, errors, config,
-    credential, identity. It must not import vision (task 2.3 lives there
-    as cache lookups) or anything to its right."""
+    credential, identity. It must not import vision or anything to its
+    right; vision will call into this store, not the other way around."""
     imported = _imported_names(MODULE_PATH.read_text(encoding="utf-8"))
     project = [name for name in imported if name.startswith("npu_rag")]
     allowed_prefixes = (

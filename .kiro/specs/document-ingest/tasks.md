@@ -40,7 +40,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 6.2, 6.7_
   - _Boundary: test fixtures_
 
-- [ ] 2. Identity and persisted state
+- [x] 2. Identity and persisted state
 - [x] 2.1 Fingerprints and chunk identity
   - A parameter fingerprint over every output-affecting parameter including the tokenizer identity, extractor versions, and the vision model and prompt version; a file content hash; a chunk identifier derived only from file-local inputs
   - The vision model id and prompt version arrive as arguments, never by importing the vision module — it sits to the right of identity in the rank table and the guard would refuse the import
@@ -50,7 +50,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - File state and the chunk registry, which stores each serialised record, in one SQLite file at the configured path; classify a file as new, changed or unchanged before any extraction; commit a file's state and its records in one transaction stamped with the run id; return the retained records of an unchanged file; report files absent since the previous run, with their chunk ids, by comparing run-id stamps
   - Observable: a simulated crash between two files leaves the first committed and the second classified as new on reopen; a second identical run classifies every file unchanged and returns its records without extraction
   - _Requirements: 8.1, 8.3, 8.4_
-- [ ] 2.3 Vision cache
+- [x] 2.3 Vision cache
   - Cache lookups and stores keyed by image hash, model id and prompt version, in the same file, safe from worker threads under a lock; a hit is returned without any other side effect
   - Observable: a stored description is returned for the same key from a second thread and is absent for any key differing in one component
   - _Requirements: 5.4, 5.5_
@@ -178,3 +178,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.6: session fixture `runtime_tokenizer` in tests/ingest/conftest.py loads `gte-modernbert-base` from tests/ingest/fixtures/tokenizer/ with `local_files_only=True`. Missing files `pytest.fail`, never skip. Limit is compiled 512.
 - 2.1: `params_fingerprint(config, tokenizer_id, extractor_versions, prompt_version)` — prompt version is an argument, not an import of vision. `chunk_id` reuses `types._locator_to_dict` so the locator discriminator stays one vocabulary.
 - 2.2: `classify` does not stamp `last_seen_run`. Task 7.2 must call `commit_file` for unchanged files with retained records, or they will appear in `deleted_since`. `vision_cache` table is deferred to 2.3.
+- 2.3: vision_cache lives in the same SQLite file; lookups/stores take the StateStore RLock so worker threads share one connection.
