@@ -7,7 +7,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - **The standing lesson applies** (`npu-embedding-runtime/tasks.md`, rules 1–10): fixtures must be able to tell right from wrong, a guard is proved by planting its negation, live-only coverage is no coverage, and prose is pinned by claim, not keyword.
 - **Only image-to-text leaves the machine.** The layer guard makes any second exit path a test failure; it is a decision, not a default.
 
-- [ ] 1. Foundation: package, dependencies, shared contracts, guard, offline tokenizer
+- [x] 1. Foundation: package, dependencies, shared contracts, guard, offline tokenizer
 - [x] 1.1 Establish the ingest package and declare its dependencies
   - Create the sibling package beside the embedding runtime with an empty public surface; add `openpyxl`, `pypdfium2`, `pillow` to the default dependency set and declare `httpx` and `markdown-it-py` explicitly there (both currently only transitive); gitignore the default state-file path
   - Install by running the runtime's provisioning tool, which performs the group-aware sync and then re-applies the vendor DLL relocation and the runtime replacement check — never a bare `uv sync`, and not `uv sync --group npu` alone, since a re-resolve re-strands the backend libraries
@@ -34,7 +34,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: a test that renders the credential every ordinary way and searches the output for the secret finds nothing
   - _Requirements: 10.4, 10.5_
   - _Boundary: OpenRouterCredential_
-- [ ] 1.6 (P) Offline tokenizer fixture
+- [x] 1.6 (P) Offline tokenizer fixture
   - Commit the tokenizer files of the ungated, Apache-2.0 third candidate model under the test fixtures and expose one session fixture that loads a real runtime tokenizer from them with no network; fail loudly, never skip, if the files are absent
   - Observable: the fixture yields a runtime tokenizer whose limit equals the compiled length, with the network unreachable
   - _Requirements: 6.2, 6.7_
@@ -175,3 +175,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.3: LAYER_ORDER is seeded complete in tests/ingest/test_package_baseline.py; later modules must not edit the table. extract→state is leftward by rank, so the name-based extract ↛ state/vision assertion is load-bearing. Only vision.py may import httpx.
 - 1.4: `token_budget` and `roots` have no defaults (1.1/6.1). `vision_base_url` defaults to `https://openrouter.ai/api/v1`. `PROMPT_VERSION` is not on IngestConfig.
 - 1.5: OpenRouterCredential imports `REDACTED`/`find_dotenv`/`parse_dotenv` from `npu_rag.embedding.models.acquire`; env key is `OPENROUTER_API_KEY`. Absence is `None`.
+- 1.6: session fixture `runtime_tokenizer` in tests/ingest/conftest.py loads `gte-modernbert-base` from tests/ingest/fixtures/tokenizer/ with `local_files_only=True`. Missing files `pytest.fail`, never skip. Limit is compiled 512.
