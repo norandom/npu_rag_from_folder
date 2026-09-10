@@ -24,7 +24,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Enforce leftward-only imports; assert by name that only the vision module imports the HTTP client and that extraction modules never import the vision or state modules, since a module inside the extract subpackage inherits its rank and a rank check alone cannot see an intra-subpackage violation
   - Observable: a decoy planted at the package top level with an upward import fails the guard by name; a decoy inside the extract subpackage importing the vision module fails the name-based assertion; removing both restores green
   - _Requirements: 10.2, 10.3_
-- [ ] 1.4 (P) Define configuration with validation
+- [x] 1.4 (P) Define configuration with validation
   - One frozen configuration object: roots (at least one), include and exclude patterns, token budget, prose overlap, page-text threshold, image-size threshold, vision model id, vision base URL, vision concurrency, state path, with design.md's defaults
   - Observable: an empty root list, a non-positive budget, or an overlap at or above the budget is refused at construction
   - _Requirements: 1.1, 1.3, 2.5, 5.3, 5.7, 6.1, 6.4_
@@ -173,3 +173,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.1: pre-existing `tests/tools/test_provision_npu.py::test_no_owned_file_mentions_conda` fails because `Path(__file__)` is the C:\ junction while `REPO_ROOT` resolves to D:\ — unrelated to ingest.
 - 1.2: ChunkRecord JSON uses a locator `type` discriminator (`markdown`/`page`/`sheet`/`image_file`); VisionUnavailable is a sibling of VisionError so `except` categories do not swallow each other.
 - 1.3: LAYER_ORDER is seeded complete in tests/ingest/test_package_baseline.py; later modules must not edit the table. extract→state is leftward by rank, so the name-based extract ↛ state/vision assertion is load-bearing. Only vision.py may import httpx.
+- 1.4: `token_budget` and `roots` have no defaults (1.1/6.1). `vision_base_url` defaults to `https://openrouter.ai/api/v1`. `PROMPT_VERSION` is not on IngestConfig.
