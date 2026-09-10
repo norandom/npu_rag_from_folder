@@ -7,11 +7,13 @@ httpx; ImageRefs are emitted, never resolved.
 from __future__ import annotations
 
 from npu_rag.ingest.extract.base import Extracted, Extractor, normalise
+from npu_rag.ingest.extract.excel import ExcelExtractor
 from npu_rag.ingest.extract.markdown import MarkdownExtractor
 from npu_rag.ingest.extract.pdf import PdfExtractor
 from npu_rag.ingest.extract.text import TextExtractor
 
 __all__ = [
+    "ExcelExtractor",
     "Extracted",
     "Extractor",
     "MarkdownExtractor",
