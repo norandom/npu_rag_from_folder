@@ -1,11 +1,14 @@
-"""Unit tests for the Excel extractor (task 4.4).
+"""Unit tests for the Excel extractor (tasks 4.4 and 4.5).
 
 Requirement 4.1: a run of entirely empty rows is the block boundary; a row is
 empty only if every cell is empty and no valued merged range covers it.
 Requirement 4.2: each block carries its label, period header row, and row
-labels. Requirement 4.8: a hidden sheet is skipped and recorded by name, never
-raised. Requirement 7.3: every block carries a SheetLocator. The committed
-workbook is built by generate.py; later tasks read it only.
+labels. Requirement 4.4: a formula cell's cached value is emitted inside the
+block and its formula text as a FormulaSegment. Requirement 4.5: a formula
+cell with no cached value is an unavailable-value omission naming the cell;
+a value is never substituted. Requirement 4.8: a hidden sheet is skipped and
+recorded by name, never raised. Requirement 7.3: every block carries a
+SheetLocator. The committed workbook is built by generate.py and is read only.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from npu_rag.ingest.extract.base import Extractor
 from npu_rag.ingest.types import (
     BlockSegment,
     Extracted,
+    FormulaSegment,
     Omission,
     OmissionCategory,
     SheetLocator,
@@ -88,6 +92,22 @@ def load_generate() -> _ExcelFixtureGenerate:
 
 
 GENERATE = load_generate()
+
+# Requirement 4.4/4.5: blocks carry cached values, never formula text and
+# never a guessed number for an uncached formula cell (C6, D6, B12).
+EXTRACTED_FIRST_BLOCK_ROWS = (
+    ("Product", "100", "110", "121"),
+    ("Services", "50", "55", "61"),
+    ("Total", str(GENERATE.CACHED_VALUE), "", ""),
+)
+EXTRACTED_SECOND_BLOCK_ROWS = (
+    ("COGS", "30", "32", "34"),
+    ("OpEx", "20", "21", "22"),
+    ("Uncached", "", "", ""),
+)
+SUBSTITUTED_C6 = "165"  # C4+C5 = 110+55, must not appear
+SUBSTITUTED_D6 = "182"  # D4+D5 = 121+61, must not appear
+SUBSTITUTED_B12 = "50"  # B10+B11 = 30+20, must not appear in the uncached cell
 
 
 def as_windows_long_path(path: Path) -> Path:
@@ -173,6 +193,23 @@ def imported_names(path: Path) -> list[str]:
 
 def blocks_of(result: Extracted) -> list[BlockSegment]:
     return [segment for segment in result.segments if isinstance(segment, BlockSegment)]
+
+
+def formulas_of(result: Extracted) -> list[FormulaSegment]:
+    return [
+        segment for segment in result.segments if isinstance(segment, FormulaSegment)
+    ]
+
+
+def formula_by_cell(result: Extracted, cell: str) -> FormulaSegment:
+    matches = [
+        segment
+        for segment in formulas_of(result)
+        if isinstance(segment.locator, SheetLocator)
+        and segment.locator.cell_range == cell
+    ]
+    assert len(matches) == 1, (cell, formulas_of(result))
+    return matches[0]
 
 
 def _naive_row_is_empty(
@@ -295,7 +332,7 @@ def test_the_fixture_yields_exactly_two_blocks_with_the_expected_ranges() -> Non
     first, second = blocks
     assert first.label == GENERATE.FIRST_BLOCK_LABEL
     assert first.header_row == GENERATE.FIRST_BLOCK_HEADER
-    assert first.rows == GENERATE.FIRST_BLOCK_ROWS
+    assert first.rows == EXTRACTED_FIRST_BLOCK_ROWS
     assert first.locator == SheetLocator(
         sheet=GENERATE.INCOME_SHEET, cell_range=GENERATE.FIRST_BLOCK_RANGE
     )
@@ -305,7 +342,7 @@ def test_the_fixture_yields_exactly_two_blocks_with_the_expected_ranges() -> Non
 
     assert second.label == GENERATE.SECOND_BLOCK_LABEL
     assert second.header_row == GENERATE.SECOND_BLOCK_HEADER
-    assert second.rows == GENERATE.SECOND_BLOCK_ROWS
+    assert second.rows == EXTRACTED_SECOND_BLOCK_ROWS
     assert second.locator == SheetLocator(
         sheet=GENERATE.INCOME_SHEET, cell_range=GENERATE.SECOND_BLOCK_RANGE
     )
@@ -451,3 +488,136 @@ def test_row_is_empty_is_the_hook_the_naive_plant_replaces() -> None:
     assert hook(2, (None, None, None, None), ((1, 3),)) is False
     assert hook(7, (None, None, None, None), ((1, 3),)) is True
     assert hook(4, (None, "100", None, None), ()) is False
+
+
+# --------------------------------------------------------------------------
+# Requirements 4.4, 4.5: cached values, formula segments, unavailable values
+# --------------------------------------------------------------------------
+
+
+def test_the_extractor_loads_once_for_cached_values_and_once_for_formula_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """design.md Extraction: ExcelExtractor loads twice (values, then formulas)."""
+    from npu_rag.ingest.extract import excel as excel_module
+
+    calls: list[bool] = []
+    real = getattr(excel_module, "load_workbook")
+
+    def spy(
+        source: object,
+        *args: object,
+        data_only: bool = False,
+        **kwargs: object,
+    ) -> object:
+        calls.append(data_only)
+        return real(source, *args, data_only=data_only, **kwargs)
+
+    monkeypatch.setattr(excel_module, "load_workbook", spy)
+    extract(source_for_fixture())
+    assert calls == [True, False]
+
+
+def test_the_cached_formula_cells_value_is_in_the_block_not_the_formula_text() -> None:
+    """Requirement 4.4: the block carries the cached number, not ``=B4+B5``."""
+    result = extract(source_for_fixture())
+    first = blocks_of(result)[0]
+    total_row = first.rows[2]
+    assert total_row[0] == "Total"
+    assert total_row[1] == str(GENERATE.CACHED_VALUE)
+    assert total_row[1] != GENERATE.CACHED_FORMULA
+    assert GENERATE.CACHED_FORMULA not in total_row
+
+
+def test_each_formula_cell_emits_a_formula_segment_with_the_formula_text() -> None:
+    """Requirement 4.4: formula text is a distinct FormulaSegment with a cell locator."""
+    result = extract(source_for_fixture())
+    expected = {
+        GENERATE.CACHED_FORMULA_CELL: GENERATE.CACHED_FORMULA,
+        "C6": "=C4+C5",
+        "D6": "=D4+D5",
+        GENERATE.UNCACHED_FORMULA_CELL: GENERATE.UNCACHED_FORMULA,
+    }
+    formulas = formulas_of(result)
+    assert len(formulas) == len(expected)
+    for cell, text in expected.items():
+        segment = formula_by_cell(result, cell)
+        assert segment.text == text
+        assert segment.locator == SheetLocator(
+            sheet=GENERATE.INCOME_SHEET, cell_range=cell
+        )
+
+
+def test_an_uncached_formula_cell_is_an_unavailable_value_omission_naming_the_cell() -> None:
+    """Requirement 4.5: B12 has no cached value; record it, never guess."""
+    source = source_for_fixture()
+    result = extract(source)
+    unavailable = [
+        item
+        for item in result.omissions
+        if item.category is OmissionCategory.VALUE_UNAVAILABLE
+    ]
+    named = {item.reason for item in unavailable}
+    assert any(GENERATE.UNCACHED_FORMULA_CELL in reason for reason in named)
+    uncached = [
+        item
+        for item in unavailable
+        if GENERATE.UNCACHED_FORMULA_CELL in item.reason
+    ]
+    assert len(uncached) == 1
+    omission = uncached[0]
+    assert isinstance(omission, Omission)
+    assert omission.path == source.path
+    assert omission.missing_capability is None
+    assert "no cached value" in omission.reason
+    assert GENERATE.HIDDEN_SHEET not in omission.reason
+
+
+def test_uncached_formula_cells_are_empty_in_the_block_never_a_substituted_value() -> None:
+    """Requirement 4.5: do not put a guessed number or the formula text in the block."""
+    result = extract(source_for_fixture())
+    first, second = blocks_of(result)
+    total_row = first.rows[2]
+    uncached_row = second.rows[2]
+
+    assert total_row[1] == str(GENERATE.CACHED_VALUE)
+    assert total_row[2] == ""
+    assert total_row[3] == ""
+    assert total_row[2] != SUBSTITUTED_C6
+    assert total_row[3] != SUBSTITUTED_D6
+    assert "=C4+C5" not in total_row
+    assert "=D4+D5" not in total_row
+
+    assert uncached_row[0] == "Uncached"
+    assert uncached_row[1] == ""
+    assert uncached_row[1] != SUBSTITUTED_B12
+    assert uncached_row[1] != GENERATE.UNCACHED_FORMULA
+    assert GENERATE.UNCACHED_FORMULA not in uncached_row
+
+    block_cells = [cell for block in (first, second) for row in block.rows for cell in row]
+    assert SUBSTITUTED_C6 not in block_cells
+    assert SUBSTITUTED_D6 not in block_cells
+
+
+def test_every_uncached_formula_cell_is_named_and_the_cached_cell_is_not() -> None:
+    """C6 and D6 have no cached ``<v>`` either; B6 does, so it is not omitted."""
+    result = extract(source_for_fixture())
+    unavailable = [
+        item
+        for item in result.omissions
+        if item.category is OmissionCategory.VALUE_UNAVAILABLE
+    ]
+    reasons = " ".join(item.reason for item in unavailable)
+    assert GENERATE.CACHED_FORMULA_CELL not in reasons
+    assert "C6" in reasons
+    assert "D6" in reasons
+    assert GENERATE.UNCACHED_FORMULA_CELL in reasons
+    assert len(unavailable) == 3
+
+
+def test_an_uncached_formula_still_emits_its_formula_segment() -> None:
+    """design.md: formula text still goes to its FORMULA chunk when the value is None."""
+    result = extract(source_for_fixture())
+    segment = formula_by_cell(result, GENERATE.UNCACHED_FORMULA_CELL)
+    assert segment.text == GENERATE.UNCACHED_FORMULA
+    assert blocks_of(result)[1].rows[2][1] == ""

@@ -1,9 +1,11 @@
-"""Excel extractor: blank-row blocks with merged-cell attribution (task 4.4).
+"""Excel extractor: blank-row blocks, cached values, and formula text (4.4, 4.5).
 
 A row is empty only if every cell is empty and no valued merged range covers
-it. Hidden sheets become ``Omission(HIDDEN_SHEET)`` and are never raised.
-Every block carries a ``SheetLocator``. This module never imports vision,
-state, or httpx.
+it. The workbook is loaded twice: cached values first, then formula text.
+Hidden sheets become ``Omission(HIDDEN_SHEET)`` and are never raised. A
+formula cell with no cached value becomes ``Omission(VALUE_UNAVAILABLE)``
+naming the cell; a value is never substituted. Every block carries a
+``SheetLocator``. This module never imports vision, state, or httpx.
 
 ``SourceFile.path`` is opened as given, including the Windows ``\\\\?\\`` form,
 by reading bytes and handing them to openpyxl.
@@ -14,6 +16,7 @@ from __future__ import annotations
 import zipfile
 from collections.abc import Sequence
 from io import BytesIO
+from pathlib import Path
 
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 from openpyxl.cell.cell import MergedCell  # type: ignore[import-untyped]
@@ -27,6 +30,7 @@ from npu_rag.ingest.extract.base import normalise
 from npu_rag.ingest.types import (
     BlockSegment,
     Extracted,
+    FormulaSegment,
     Omission,
     OmissionCategory,
     Segment,
@@ -35,6 +39,15 @@ from npu_rag.ingest.types import (
 )
 
 __all__ = ["ExcelExtractor"]
+
+
+_LOAD_ERRORS = (
+    InvalidFileException,
+    zipfile.BadZipFile,
+    OSError,
+    KeyError,
+    ValueError,
+)
 
 
 class ExcelExtractor:
@@ -51,29 +64,46 @@ class ExcelExtractor:
                 path=source.path,
             ) from exc
         try:
-            workbook = load_workbook(BytesIO(payload), data_only=False)
-        except (InvalidFileException, zipfile.BadZipFile, OSError, KeyError, ValueError) as exc:
+            values_workbook = load_workbook(BytesIO(payload), data_only=True)
+        except _LOAD_ERRORS as exc:
             raise ExtractionError(
                 f"could not read {source.relative_path.as_posix()} as a workbook",
                 stage="extraction",
                 path=source.path,
             ) from exc
         try:
-            segments: list[Segment] = []
-            omissions: list[Omission] = []
-            for sheet in workbook.worksheets:
-                if sheet.sheet_state != "visible":
-                    omissions.append(
-                        Omission(
-                            category=OmissionCategory.HIDDEN_SHEET,
-                            path=source.path,
-                            reason=f"hidden sheet {sheet.title!r} skipped",
+            try:
+                formulas_workbook = load_workbook(BytesIO(payload), data_only=False)
+            except _LOAD_ERRORS as exc:
+                raise ExtractionError(
+                    f"could not read {source.relative_path.as_posix()} as a workbook",
+                    stage="extraction",
+                    path=source.path,
+                ) from exc
+            try:
+                segments: list[Segment] = []
+                omissions: list[Omission] = []
+                for sheet in formulas_workbook.worksheets:
+                    if sheet.sheet_state != "visible":
+                        omissions.append(
+                            Omission(
+                                category=OmissionCategory.HIDDEN_SHEET,
+                                path=source.path,
+                                reason=f"hidden sheet {sheet.title!r} skipped",
+                            )
                         )
+                        continue
+                    values_sheet = values_workbook[sheet.title]
+                    segments.extend(_blocks_for_sheet(sheet, values_sheet))
+                    formula_segments, value_omissions = _formulas_for_sheet(
+                        sheet, values_sheet, source.path
                     )
-                    continue
-                segments.extend(_blocks_for_sheet(sheet))
+                    segments.extend(formula_segments)
+                    omissions.extend(value_omissions)
+            finally:
+                formulas_workbook.close()
         finally:
-            workbook.close()
+            values_workbook.close()
         return Extracted(title=None, segments=tuple(segments), omissions=tuple(omissions))
 
 
@@ -92,7 +122,9 @@ def _is_empty_cell(value: object) -> bool:
     return value is None or value == ""
 
 
-def _blocks_for_sheet(sheet: Worksheet) -> list[BlockSegment]:
+def _blocks_for_sheet(
+    sheet: Worksheet, values_sheet: Worksheet
+) -> list[BlockSegment]:
     max_row = int(sheet.max_row or 0)
     max_col = int(sheet.max_column or 0)
     if max_row == 0 or max_col == 0:
@@ -100,9 +132,60 @@ def _blocks_for_sheet(sheet: Worksheet) -> list[BlockSegment]:
     spans = _valued_merged_row_spans(sheet)
     rows = list(sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_col))
     return [
-        _block_from_run(sheet, start, end, max_col)
+        _block_from_run(sheet, values_sheet, start, end, max_col)
         for start, end in _nonempty_runs(rows, spans)
     ]
+
+
+def _formulas_for_sheet(
+    sheet: Worksheet, values_sheet: Worksheet, path: Path
+) -> tuple[list[FormulaSegment], list[Omission]]:
+    max_row = int(sheet.max_row or 0)
+    max_col = int(sheet.max_column or 0)
+    if max_row == 0 or max_col == 0:
+        return [], []
+    segments: list[FormulaSegment] = []
+    omissions: list[Omission] = []
+    for row in sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+        for cell in row:
+            text = _formula_text(cell)
+            if text is None:
+                continue
+            coordinate = str(cell.coordinate)
+            segments.append(
+                FormulaSegment(
+                    text=text,
+                    locator=SheetLocator(sheet=sheet.title, cell_range=coordinate),
+                )
+            )
+            cached = values_sheet[coordinate].value
+            if _is_empty_cell(cached):
+                omissions.append(
+                    Omission(
+                        category=OmissionCategory.VALUE_UNAVAILABLE,
+                        path=path,
+                        reason=(
+                            f"cell {coordinate} on sheet {sheet.title!r} has no "
+                            "cached value; the workbook was not saved by an "
+                            "application that computes formulas"
+                        ),
+                    )
+                )
+    return segments, omissions
+
+
+def _formula_text(cell: object) -> str | None:
+    if isinstance(cell, MergedCell):
+        return None
+    if getattr(cell, "data_type", None) != "f":
+        return None
+    value = getattr(cell, "value", None)
+    if isinstance(value, str):
+        return value if value.startswith("=") else f"={value}"
+    text = getattr(value, "text", None)
+    if isinstance(text, str) and text:
+        return text if text.startswith("=") else f"={text}"
+    return None
 
 
 def _valued_merged_row_spans(sheet: Worksheet) -> tuple[tuple[int, int], ...]:
@@ -134,7 +217,11 @@ def _nonempty_runs(
 
 
 def _block_from_run(
-    sheet: Worksheet, start: int, end: int, max_col: int
+    sheet: Worksheet,
+    values_sheet: Worksheet,
+    start: int,
+    end: int,
+    max_col: int,
 ) -> BlockSegment:
     min_col, used_col = _used_columns(sheet, start, end, max_col)
     label = ""
@@ -143,7 +230,7 @@ def _block_from_run(
     data_rows: list[tuple[str, ...]] = []
     for row_index in range(start, end + 1):
         texts = tuple(
-            _cell_text(sheet, row_index, column)
+            _cell_text(values_sheet, row_index, column)
             for column in range(min_col, used_col + 1)
         )
         if row_index == start:
