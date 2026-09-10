@@ -41,7 +41,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Boundary: test fixtures_
 
 - [ ] 2. Identity and persisted state
-- [ ] 2.1 Fingerprints and chunk identity
+- [x] 2.1 Fingerprints and chunk identity
   - A parameter fingerprint over every output-affecting parameter including the tokenizer identity, extractor versions, and the vision model and prompt version; a file content hash; a chunk identifier derived only from file-local inputs
   - The vision model id and prompt version arrive as arguments, never by importing the vision module — it sits to the right of identity in the rank table and the guard would refuse the import
   - Observable: changing any listed parameter changes the fingerprint and changing nothing else leaves it identical; a change to an unrelated file leaves every chunk identifier unchanged
@@ -176,3 +176,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.4: `token_budget` and `roots` have no defaults (1.1/6.1). `vision_base_url` defaults to `https://openrouter.ai/api/v1`. `PROMPT_VERSION` is not on IngestConfig.
 - 1.5: OpenRouterCredential imports `REDACTED`/`find_dotenv`/`parse_dotenv` from `npu_rag.embedding.models.acquire`; env key is `OPENROUTER_API_KEY`. Absence is `None`.
 - 1.6: session fixture `runtime_tokenizer` in tests/ingest/conftest.py loads `gte-modernbert-base` from tests/ingest/fixtures/tokenizer/ with `local_files_only=True`. Missing files `pytest.fail`, never skip. Limit is compiled 512.
+- 2.1: `params_fingerprint(config, tokenizer_id, extractor_versions, prompt_version)` — prompt version is an argument, not an import of vision. `chunk_id` reuses `types._locator_to_dict` so the locator discriminator stays one vocabulary.
