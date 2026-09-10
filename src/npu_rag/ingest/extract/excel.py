@@ -1,11 +1,14 @@
-"""Excel extractor: blank-row blocks, cached values, and formula text (4.4, 4.5).
+"""Excel extractor: blank-row blocks, values, formulas, charts, and images.
 
 A row is empty only if every cell is empty and no valued merged range covers
 it. The workbook is loaded twice: cached values first, then formula text.
 Hidden sheets become ``Omission(HIDDEN_SHEET)`` and are never raised. A
 formula cell with no cached value becomes ``Omission(VALUE_UNAVAILABLE)``
 naming the cell; a value is never substituted. Every block carries a
-``SheetLocator``. This module never imports vision, state, or httpx.
+``SheetLocator``. Anchored images and charts are read only through
+``anchored_objects``, which is the sole access to the library's private
+``_images`` / ``_charts`` attributes. Chart series source ranges are copied
+onto the image reference; this module never imports vision, state, or httpx.
 
 ``SourceFile.path`` is opened as given, including the Windows ``\\\\?\\`` form,
 by reading bytes and handing them to openpyxl.
@@ -23,14 +26,17 @@ from openpyxl.cell.cell import MergedCell  # type: ignore[import-untyped]
 from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 from openpyxl.utils.exceptions import InvalidFileException  # type: ignore[import-untyped]
 from openpyxl.worksheet.worksheet import Worksheet  # type: ignore[import-untyped]
+from PIL import Image
 
 from npu_rag.ingest.config import IngestConfig
 from npu_rag.ingest.errors import ExtractionError
 from npu_rag.ingest.extract.base import normalise
 from npu_rag.ingest.types import (
     BlockSegment,
+    ChartRanges,
     Extracted,
     FormulaSegment,
+    ImageRef,
     Omission,
     OmissionCategory,
     Segment,
@@ -38,7 +44,12 @@ from npu_rag.ingest.types import (
     SourceFile,
 )
 
-__all__ = ["ExcelExtractor"]
+__all__ = ["ExcelExtractor", "anchored_objects"]
+
+_EMU_PER_PIXEL = 9525  # 96 dpi
+_CM_TO_PIXELS = 96 / 2.54
+_DEFAULT_CHART_WIDTH_CM = 15.0
+_DEFAULT_CHART_HEIGHT_CM = 7.5
 
 
 _LOAD_ERRORS = (
@@ -100,11 +111,151 @@ class ExcelExtractor:
                     )
                     segments.extend(formula_segments)
                     omissions.extend(value_omissions)
+                    segments.extend(anchored_objects(sheet))
             finally:
                 formulas_workbook.close()
         finally:
             values_workbook.close()
         return Extracted(title=None, segments=tuple(segments), omissions=tuple(omissions))
+
+
+def anchored_objects(ws: Worksheet) -> list[ImageRef]:
+    """ImageRefs for every anchored image and chart on *ws*.
+
+    Direct attribute access: if ``_images`` or ``_charts`` disappear, this
+    raises ``AttributeError`` instead of returning an empty list.
+    """
+    images: Sequence[object] = ws._images
+    charts: Sequence[object] = ws._charts
+    located: list[tuple[tuple[int, int], ImageRef]] = []
+    for image in images:
+        located.append((_anchor_order(image), _image_ref(ws, image)))
+    for chart in charts:
+        located.append((_anchor_order(chart), _chart_ref(ws, chart)))
+    located.sort(key=lambda item: item[0])
+    return [ref for _, ref in located]
+
+
+def _image_ref(sheet: Worksheet, image: object) -> ImageRef:
+    loader = getattr(image, "_data")
+    payload = loader() if callable(loader) else loader
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError("anchored image _data did not return bytes")
+    return _raster_ref(
+        bytes(payload),
+        SheetLocator(sheet=sheet.title, cell_range=_anchor_cell(image)),
+        ranges=None,
+    )
+
+
+def _chart_ref(sheet: Worksheet, chart: object) -> ImageRef:
+    width, height = _chart_pixel_size(chart)
+    return _raster_ref(
+        _png_bytes(width, height),
+        SheetLocator(sheet=sheet.title, cell_range=_anchor_cell(chart)),
+        ranges=_chart_ranges(chart),
+    )
+
+
+def _raster_ref(
+    data: bytes, locator: SheetLocator, ranges: ChartRanges | None
+) -> ImageRef:
+    with Image.open(BytesIO(data)) as parsed:
+        width, height = parsed.size
+        fmt = parsed.format
+    if not fmt:
+        raise TypeError("anchored object produced an image with no format")
+    mime = Image.MIME.get(fmt, "application/octet-stream")
+    return ImageRef(
+        data=data,
+        mime=mime,
+        width=int(width),
+        height=int(height),
+        locator=locator,
+        chart_ranges=ranges,
+    )
+
+
+def _chart_ranges(chart: object) -> ChartRanges:
+    values: list[str] = []
+    categories: list[str] = []
+    series = getattr(chart, "series", ()) or ()
+    for item in series:
+        value = _series_formula(getattr(item, "val", None))
+        if value is not None:
+            values.append(value)
+        category = _series_formula(getattr(item, "cat", None))
+        if category is not None:
+            categories.append(category)
+    return ChartRanges(
+        value_ranges=tuple(values), category_ranges=tuple(categories)
+    )
+
+
+def _series_formula(source: object) -> str | None:
+    if source is None:
+        return None
+    for name in ("numRef", "strRef", "multiLvlStrRef"):
+        ref = getattr(source, name, None)
+        formula = getattr(ref, "f", None) if ref is not None else None
+        if isinstance(formula, str) and formula:
+            return formula
+    return None
+
+
+def _chart_pixel_size(chart: object) -> tuple[int, int]:
+    anchor = getattr(chart, "anchor", None)
+    ext = getattr(anchor, "ext", None)
+    cx = getattr(ext, "cx", None)
+    cy = getattr(ext, "cy", None)
+    if isinstance(cx, int) and isinstance(cy, int) and cx > 0 and cy > 0:
+        return (
+            max(1, round(cx / _EMU_PER_PIXEL)),
+            max(1, round(cy / _EMU_PER_PIXEL)),
+        )
+    width_cm = getattr(chart, "width", None)
+    height_cm = getattr(chart, "height", None)
+    width = (
+        float(width_cm)
+        if isinstance(width_cm, (int, float))
+        else _DEFAULT_CHART_WIDTH_CM
+    )
+    height = (
+        float(height_cm)
+        if isinstance(height_cm, (int, float))
+        else _DEFAULT_CHART_HEIGHT_CM
+    )
+    return (
+        max(1, round(width * _CM_TO_PIXELS)),
+        max(1, round(height * _CM_TO_PIXELS)),
+    )
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    image = Image.new("RGB", (width, height), color=(255, 255, 255))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _anchor_cell(obj: object) -> str:
+    anchor = getattr(obj, "anchor", None)
+    if isinstance(anchor, str) and anchor:
+        return anchor
+    marker = getattr(anchor, "_from", None)
+    if marker is None:
+        return "A1"
+    column = int(getattr(marker, "col")) + 1
+    row = int(getattr(marker, "row")) + 1
+    return f"{get_column_letter(column)}{row}"
+
+
+def _anchor_order(obj: object) -> tuple[int, int]:
+    anchor = getattr(obj, "anchor", None)
+    marker = getattr(anchor, "_from", None)
+    if marker is None:
+        return (0, 0)
+    return (int(getattr(marker, "row")), int(getattr(marker, "col")))
 
 
 def _row_is_empty(

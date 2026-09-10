@@ -1,4 +1,4 @@
-"""Unit tests for the Excel extractor (tasks 4.4 and 4.5).
+"""Unit tests for the Excel extractor (tasks 4.4, 4.5, and 4.6).
 
 Requirement 4.1: a run of entirely empty rows is the block boundary; a row is
 empty only if every cell is empty and no valued merged range covers it.
@@ -6,9 +6,12 @@ Requirement 4.2: each block carries its label, period header row, and row
 labels. Requirement 4.4: a formula cell's cached value is emitted inside the
 block and its formula text as a FormulaSegment. Requirement 4.5: a formula
 cell with no cached value is an unavailable-value omission naming the cell;
-a value is never substituted. Requirement 4.8: a hidden sheet is skipped and
-recorded by name, never raised. Requirement 7.3: every block carries a
-SheetLocator. The committed workbook is built by generate.py and is read only.
+a value is never substituted. Requirement 4.6: each anchored image and each
+chart is an ImageRef. Requirement 4.7: a chart's series source ranges are
+read from the object and attached to its reference, never obtained by
+image-to-text. Requirement 4.8: a hidden sheet is skipped and recorded by
+name, never raised. Requirement 7.3: every block carries a SheetLocator.
+The committed workbook is built by generate.py and is read only.
 """
 
 from __future__ import annotations
@@ -30,8 +33,10 @@ from npu_rag.ingest.errors import ExtractionError
 from npu_rag.ingest.extract.base import Extractor
 from npu_rag.ingest.types import (
     BlockSegment,
+    ChartRanges,
     Extracted,
     FormulaSegment,
+    ImageRef,
     Omission,
     OmissionCategory,
     SheetLocator,
@@ -210,6 +215,47 @@ def formula_by_cell(result: Extracted, cell: str) -> FormulaSegment:
     ]
     assert len(matches) == 1, (cell, formulas_of(result))
     return matches[0]
+
+
+def image_refs_of(result: Extracted) -> list[ImageRef]:
+    return [segment for segment in result.segments if isinstance(segment, ImageRef)]
+
+
+def fixture_media_png() -> bytes:
+    names = zipfile.ZipFile(FIXTURE_PATH).namelist()
+    media = [name for name in names if name.startswith("xl/media/")]
+    assert len(media) == 1
+    payload = zipfile.ZipFile(FIXTURE_PATH).read(media[0])
+    assert payload.startswith(PNG_MAGIC)
+    return payload
+
+
+def functions_touching_private_drawing_attrs(path: Path) -> set[str]:
+    """Function names in *path* that read ``_images`` / ``_charts``."""
+    found: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.function: str | None = None
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            previous = self.function
+            self.function = node.name
+            self.generic_visit(node)
+            self.function = previous
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if node.attr in {"_images", "_charts"}:
+                found.add(self.function or "<module>")
+            self.generic_visit(node)
+
+        def visit_Constant(self, node: ast.Constant) -> None:
+            if node.value in {"_images", "_charts"}:
+                found.add(self.function or "<module>")
+            self.generic_visit(node)
+
+    Visitor().visit(ast.parse(path.read_text(encoding="utf-8")))
+    return found
 
 
 def _naive_row_is_empty(
@@ -621,3 +667,154 @@ def test_an_uncached_formula_still_emits_its_formula_segment() -> None:
     segment = formula_by_cell(result, GENERATE.UNCACHED_FORMULA_CELL)
     assert segment.text == GENERATE.UNCACHED_FORMULA
     assert blocks_of(result)[1].rows[2][1] == ""
+
+
+# --------------------------------------------------------------------------
+# Requirements 4.6, 4.7: anchored images, charts, and series source ranges
+# --------------------------------------------------------------------------
+
+PINNED_OPENPYXL = "3.1.5"
+CHART_VALUE_RANGE = "'Income'!$B$4:$B$5"
+CHART_CATEGORY_RANGE = "'Income'!$A$4:$A$5"
+DEFAULT_MIN_IMAGE_PIXELS = 200
+
+
+def test_openpyxl_is_pinned_at_the_designed_version() -> None:
+    """design.md Technology Stack 3.1.5: private drawing attrs are version-pinned."""
+    import openpyxl
+
+    assert openpyxl.__version__ == PINNED_OPENPYXL
+
+
+def test_only_anchored_objects_touches_the_private_drawing_attributes() -> None:
+    """design.md Extraction: all access to ws._images / ws._charts lives in one function."""
+    assert functions_touching_private_drawing_attrs(EXCEL_PATH) == {"anchored_objects"}
+
+
+def test_anchored_objects_fails_loudly_if_the_private_attributes_disappear() -> None:
+    """Smoke: missing _images / _charts is AttributeError, never a silent empty list."""
+    from npu_rag.ingest.extract.excel import anchored_objects
+
+    workbook = load_workbook(FIXTURE_PATH, data_only=False)
+    try:
+        sheet = workbook[GENERATE.INCOME_SHEET]
+        assert hasattr(sheet, "_images"), (
+            "openpyxl worksheet no longer exposes _images; the adapter cannot find "
+            "anchored images"
+        )
+        assert hasattr(sheet, "_charts"), (
+            "openpyxl worksheet no longer exposes _charts; the adapter cannot find "
+            "embedded charts"
+        )
+        refs = anchored_objects(sheet)
+        assert len(refs) == 2
+    finally:
+        workbook.close()
+
+    class BareWorksheet:
+        title = GENERATE.INCOME_SHEET
+
+    try:
+        result = anchored_objects(BareWorksheet())
+    except AttributeError:
+        return
+    pytest.fail(
+        "anchored_objects returned an empty-or-silent result when _images/_charts "
+        f"were absent: {result!r}"
+    )
+
+
+def test_planting_empty_private_lists_yields_no_image_refs() -> None:
+    """The adapter reads ws._images and ws._charts in place, not a copy taken earlier."""
+    from npu_rag.ingest.extract.excel import anchored_objects
+
+    workbook = load_workbook(FIXTURE_PATH, data_only=False)
+    try:
+        sheet = workbook[GENERATE.INCOME_SHEET]
+        sheet._images = []
+        sheet._charts = []
+        assert anchored_objects(sheet) == []
+    finally:
+        workbook.close()
+
+
+def test_anchored_objects_emits_the_fixture_image_and_chart_with_series_ranges() -> None:
+    """Requirement 4.6/4.7: one ImageRef per anchored image and chart; ranges from the series."""
+    from npu_rag.ingest.extract.excel import anchored_objects
+
+    workbook = load_workbook(FIXTURE_PATH, data_only=False)
+    try:
+        refs = anchored_objects(workbook[GENERATE.INCOME_SHEET])
+    finally:
+        workbook.close()
+
+    assert len(refs) == 2
+    assert all(isinstance(ref, ImageRef) for ref in refs)
+
+    chart_refs = [ref for ref in refs if ref.chart_ranges is not None]
+    image_refs = [ref for ref in refs if ref.chart_ranges is None]
+    assert len(chart_refs) == 1
+    assert len(image_refs) == 1
+
+    chart = chart_refs[0]
+    assert chart.chart_ranges == ChartRanges(
+        value_ranges=(CHART_VALUE_RANGE,),
+        category_ranges=(CHART_CATEGORY_RANGE,),
+    )
+    assert chart.locator == SheetLocator(
+        sheet=GENERATE.INCOME_SHEET, cell_range=GENERATE.CHART_ANCHOR
+    )
+    assert chart.mime == "image/png"
+    assert chart.data.startswith(PNG_MAGIC)
+    assert min(chart.width, chart.height) >= DEFAULT_MIN_IMAGE_PIXELS
+
+    image = image_refs[0]
+    assert image.data == fixture_media_png()
+    assert image.mime == "image/png"
+    assert (image.width, image.height) == (8, 8)
+    assert image.locator == SheetLocator(
+        sheet=GENERATE.INCOME_SHEET, cell_range=GENERATE.IMAGE_ANCHOR
+    )
+    assert image.chart_ranges is None
+    assert chart.data != image.data
+
+
+def test_the_extractor_emits_image_refs_for_the_fixture_chart_and_image() -> None:
+    """Requirement 4.6: ExcelExtractor routes anchored objects as ImageRefs."""
+    result = extract(source_for_fixture())
+    refs = image_refs_of(result)
+    assert len(refs) == 2
+    assert len(blocks_of(result)) == 2
+
+    chart = next(ref for ref in refs if ref.chart_ranges is not None)
+    image = next(ref for ref in refs if ref.chart_ranges is None)
+
+    assert chart.chart_ranges == ChartRanges(
+        value_ranges=(CHART_VALUE_RANGE,),
+        category_ranges=(CHART_CATEGORY_RANGE,),
+    )
+    assert chart.locator == SheetLocator(
+        sheet=GENERATE.INCOME_SHEET, cell_range=GENERATE.CHART_ANCHOR
+    )
+    assert image.data == fixture_media_png()
+    assert image.locator == SheetLocator(
+        sheet=GENERATE.INCOME_SHEET, cell_range=GENERATE.IMAGE_ANCHOR
+    )
+
+
+def test_chart_source_ranges_are_present_without_an_image_to_text_call() -> None:
+    """Requirement 4.7: ranges come from the chart object; extract never imports vision."""
+    result = extract(source_for_fixture())
+    chart = next(ref for ref in image_refs_of(result) if ref.chart_ranges is not None)
+    ranges = chart.chart_ranges
+    assert ranges is not None
+    assert CHART_VALUE_RANGE in ranges.value_ranges
+    assert CHART_CATEGORY_RANGE in ranges.category_ranges
+    names = imported_names(EXCEL_PATH)
+    assert all(
+        name != "npu_rag.ingest.vision"
+        and not name.startswith("npu_rag.ingest.vision.")
+        and name != "httpx"
+        and not name.startswith("httpx.")
+        for name in names
+    ), names
