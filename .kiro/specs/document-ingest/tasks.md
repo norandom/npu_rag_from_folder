@@ -67,7 +67,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Boundary: Router_
 
 - [ ] 4. Extraction
-- [ ] 4.1 Extractor protocol, normalisation, and the plain-text reference adapter
+- [x] 4.1 Extractor protocol, normalisation, and the plain-text reference adapter
   - The extractor protocol and its result type; Unicode normalisation and whitespace collapsing as a pure function that never alters words; the plain-text adapter as the smallest conforming implementation
   - Observable: a fixture with mixed Unicode forms and redundant whitespace normalises to a literal expected string with every word intact
   - _Requirements: 3.3_
@@ -181,3 +181,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 2.3: vision_cache lives in the same SQLite file; lookups/stores take the StateStore RLock so worker threads share one connection.
 - 3.1: on Windows, `SourceFile.path` is always `\\?\`-prefixed (including short paths). Extractors must open that form. Include/exclude: `**` is recursive, `*` is one path segment; exclude wins. Author is empty when the file sits directly in the root. First overlapping root wins.
 - 3.2: sniff wins over a misleading extension. After a miss, fall back to known extensions (`.pdf`/`.xlsx`/raster/`.md`/`.txt`) so a corrupt file still reaches its extractor (8.4 FAILED, not UNSUPPORTED). True unknown types are `Omission(UNSUPPORTED)` with the path. Tokens only; the adapter table is pipeline's.
+- 4.1: `normalise` is NFC plus whitespace collapse in extract/base.py. Plain-text `MarkdownLocator` is 1-based inclusive. Task 4.2 must convert markdown-it's 0-based exclusive `token.map` rather than pass maps through.
