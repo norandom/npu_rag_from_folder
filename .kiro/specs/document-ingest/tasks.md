@@ -72,7 +72,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: a fixture with mixed Unicode forms and redundant whitespace normalises to a literal expected string with every word intact
   - _Requirements: 3.3_
   - _Boundary: extract base_
-- [ ] 4.2 (P) Markdown extractor
+- [x] 4.2 (P) Markdown extractor
   - Parse the token stream; drop front matter, HTML blocks and image syntax; maintain the heading path in reading order; emit tables as table segments; emit each image reference anchored to its enclosing block's line range and ordinal, resolved relative to the file; record the document title
   - Fixture: front matter, an HTML block, a heading hierarchy, a table, images with and without alt text
   - Observable: the fixture yields the expected heading paths, one table segment, and image references whose anchors point at the right lines; no emitted text contains markup
@@ -182,3 +182,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 3.1: on Windows, `SourceFile.path` is always `\\?\`-prefixed (including short paths). Extractors must open that form. Include/exclude: `**` is recursive, `*` is one path segment; exclude wins. Author is empty when the file sits directly in the root. First overlapping root wins.
 - 3.2: sniff wins over a misleading extension. After a miss, fall back to known extensions (`.pdf`/`.xlsx`/raster/`.md`/`.txt`) so a corrupt file still reaches its extractor (8.4 FAILED, not UNSUPPORTED). True unknown types are `Omission(UNSUPPORTED)` with the path. Tokens only; the adapter table is pipeline's.
 - 4.1: `normalise` is NFC plus whitespace collapse in extract/base.py. Plain-text `MarkdownLocator` is 1-based inclusive. Task 4.2 must convert markdown-it's 0-based exclusive `token.map` rather than pass maps through.
+- 4.2: Image tokens in headings and table cells must emit ImageRefs (`_image_refs_from_children`); paragraph-only handling dropped them. Title is YAML `title:` else first heading. Missing image file raises ExtractionError for the markdown source.
