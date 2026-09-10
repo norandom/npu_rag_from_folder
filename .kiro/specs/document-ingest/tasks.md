@@ -19,7 +19,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Invariants enforced at construction: a figure chunk carries provenance and no other kind does; an omission names a missing capability exactly when its category is vision-unavailable; a resolved image is exactly one of figure or omission
   - Observable: each invariant-violating construction is refused by a test that plants it; a record survives serialise-then-parse unchanged
   - _Requirements: 5.8, 7.1, 7.3, 9.4_
-- [ ] 1.3 Package-wide layer guard, seeded with the complete dependency direction
+- [x] 1.3 Package-wide layer guard, seeded with the complete dependency direction
   - Seed the rank table with design.md's full order — types and errors, config, credential, identity, state, discover, route, extract as one rank, vision, chunk and report, pipeline — before any of those modules exist, so later tasks add files without editing the table
   - Enforce leftward-only imports; assert by name that only the vision module imports the HTTP client and that extraction modules never import the vision or state modules, since a module inside the extract subpackage inherits its rank and a rank check alone cannot see an intra-subpackage violation
   - Observable: a decoy planted at the package top level with an upward import fails the guard by name; a decoy inside the extract subpackage importing the vision module fails the name-based assertion; removing both restores green
@@ -172,3 +172,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.1: `provision_npu`'s inner `uv sync --group npu` drops the optional `export` extra; restore with `uv sync --extra export --group npu` then `provision_npu --skip-sync`, and use `uv run --no-sync` afterwards.
 - 1.1: pre-existing `tests/tools/test_provision_npu.py::test_no_owned_file_mentions_conda` fails because `Path(__file__)` is the C:\ junction while `REPO_ROOT` resolves to D:\ — unrelated to ingest.
 - 1.2: ChunkRecord JSON uses a locator `type` discriminator (`markdown`/`page`/`sheet`/`image_file`); VisionUnavailable is a sibling of VisionError so `except` categories do not swallow each other.
+- 1.3: LAYER_ORDER is seeded complete in tests/ingest/test_package_baseline.py; later modules must not edit the table. extract→state is leftward by rank, so the name-based extract ↛ state/vision assertion is load-bearing. Only vision.py may import httpx.
