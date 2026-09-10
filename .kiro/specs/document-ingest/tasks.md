@@ -14,7 +14,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Citation note: 10.1 is discharged by 7.2 and 8.2; this task's true anchor is design.md's Modified Files. The id is retained so coverage tooling stays whole
   - Observable: the package imports, the full existing suite stays green, and the runtime's provider check still reports the NPU registered afterwards
   - _Requirements: 10.1_
-- [ ] 1.2 Define the domain types and the error taxonomy
+- [x] 1.2 Define the domain types and the error taxonomy
   - Source file, the locator kinds, the segment kinds including the image reference, the chunk kind enumeration, the chunk record with a JSON round-trip, the omission record and the run report; errors carrying a stage and a path
   - Invariants enforced at construction: a figure chunk carries provenance and no other kind does; an omission names a missing capability exactly when its category is vision-unavailable; a resolved image is exactly one of figure or omission
   - Observable: each invariant-violating construction is refused by a test that plants it; a record survives serialise-then-parse unchanged
@@ -171,3 +171,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.1: pytest addopts now include `--import-mode=importlib` so ingest and embedding can both keep the design-named `test_package_baseline.py`; prepend mode cannot collect both.
 - 1.1: `provision_npu`'s inner `uv sync --group npu` drops the optional `export` extra; restore with `uv sync --extra export --group npu` then `provision_npu --skip-sync`, and use `uv run --no-sync` afterwards.
 - 1.1: pre-existing `tests/tools/test_provision_npu.py::test_no_owned_file_mentions_conda` fails because `Path(__file__)` is the C:\ junction while `REPO_ROOT` resolves to D:\ — unrelated to ingest.
+- 1.2: ChunkRecord JSON uses a locator `type` discriminator (`markdown`/`page`/`sheet`/`image_file`); VisionUnavailable is a sibling of VisionError so `except` categories do not swallow each other.
