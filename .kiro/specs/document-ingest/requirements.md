@@ -18,21 +18,21 @@ Only 9.8% of image references in the Markdown carry alt text (399 of 4,087), and
 
 ### What should change
 
-A single call walks configurable roots and returns clean, chunked, metadata-tagged records ready for embedding, re-runnable cheaply as the archive grows. Extraction is routed by what a file actually contains, so the expensive path stays rare. Spreadsheets are chunked by labelled block rather than by row count. Only image-to-text leaves the machine. Per-file failures are reported and skipped, never fatal.
+A single call walks configurable roots and returns clean, chunked, metadata-tagged records ready for embedding, re-runnable cheaply as the archive grows. Extraction is routed by what a file actually contains, so the expensive path stays rare. Spreadsheets are chunked by labelled block rather than by row count. Image-to-text is local OCR and never invents a number. Per-file failures are reported and skipped, never fatal.
 
-See `.kiro/specs/document-ingest/brief.md`, redesigned 2026-09-07, for the measured corpus profile, the rejected local-ONNX-vision alternative, and the network-boundary rationale.
+See `.kiro/specs/document-ingest/brief.md`, amended 2026-09-10, for the measured corpus profile, the withdrawn hosted-vision decision, and the local det+rec OCR path.
 
 ## Introduction
 
 This feature converts a heterogeneous local archive into embedding-ready chunk records. It discovers files under configurable roots, routes each to an extraction path chosen by what the file actually contains, cuts the result into chunks that fit a token budget it does not choose, attaches metadata sufficient for retrieval and provenance, and persists enough per-file state that a later run does work only for what changed.
 
-Its defining constraint is locality. Embedding, extraction, chunking and hashing all happen on this machine, and a search performed later must work with the network unplugged. Exactly one outbound call exists — turning an image into text — and it is optional: with no credential configured the pipeline is complete, and the inputs that would have needed it are reported rather than silently dropped.
+Its defining constraint is locality. Embedding, extraction, OCR, chunking and hashing all happen on this machine. Ingest and a later search must both work with the network unplugged. Image-to-text is optional local OCR: with the models absent the pipeline is complete, and the inputs that would have needed it are reported rather than silently dropped. It transcribes visible text and does not invent numbers.
 
 ## Boundary Context
 
-- **In scope**: discovery under configurable roots; content-based routing between extraction paths; extraction from Markdown, plain text, PDF and spreadsheet workbooks; the optional hosted image-to-text call together with its result cache and its absent-credential behaviour; labelled-block chunking of worksheets with values and formulas; token-budget-aware chunking with heading-aware splitting; per-chunk metadata and provenance; per-file state, change classification and deletion handling; per-file failure isolation and an end-of-run report.
+- **In scope**: discovery under configurable roots; content-based routing between extraction paths; extraction from Markdown, plain text, PDF and spreadsheet workbooks; optional local detection-and-recognition OCR together with its result cache, a second-engine vote on numeric tokens, and absent-model behaviour; labelled-block chunking of worksheets with values and formulas; native chart source ranges indexed without OCR; token-budget-aware chunking with heading-aware splitting; per-chunk metadata and provenance; per-file state, change classification and deletion handling; per-file failure isolation and an end-of-run report.
 
-- **Out of scope**: producing embedding vectors; storing chunks or vectors; choosing the token budget value; deciding which tokenizer is authoritative; acquiring or scraping source documents; evaluating or comparing candidate vision models; any hosted call other than image-to-text.
+- **Out of scope**: producing embedding vectors; storing chunks or vectors; choosing the token budget value; deciding which tokenizer is authoritative; acquiring or scraping source documents; hosted image-to-text or any vision-language model; DeepDoc layout and table-structure models; compiling OCR onto the NPU.
 
 - **Adjacent expectations**: `npu-embedding-runtime` (closed) supplies the tokenizer and the 512-token compiled length, and its default embedding model is text-only. Its task 8.1 — the check that a consumer's token count agrees with the runtime's own truncation decision — was descoped, so **that contract is unverified and this feature must verify it rather than assume it**. `vector-index` consumes the emitted records and must handle several chunk kinds rather than one. `search-cli` surfaces the run report. The source archive is maintained by a separate tool outside this feature's control and is read-only to it.
 
@@ -90,20 +90,22 @@ Its defining constraint is locality. Embedding, extraction, chunking and hashing
 7. Where an embedded chart declares the cell ranges it draws from, the Document Ingest shall record those ranges and shall not require image-to-text conversion to obtain them.
 8. If a worksheet is hidden, then the Document Ingest shall skip it and shall record it as skipped with its name.
 
-### Requirement 5: Optional Image-to-Text Conversion
+### Requirement 5: Optional Local OCR
 
-**Objective:** As the archive owner, I want the content of charts and scanned pages to become searchable, without that capability being a prerequisite for running at all.
+**Objective:** As the archive owner, I want visible text in charts and scanned pages to become searchable as it appeared, without a vision model inventing numbers, and without that capability being a prerequisite for running at all.
 
 #### Acceptance Criteria
 
-1. Where a vision credential is configured, the Document Ingest shall convert each routed image to text and shall emit the result as a chunk of a distinct kind carrying a reference to the source image.
-2. Where no vision credential is configured, the Document Ingest shall skip every input that requires image-to-text conversion and shall report those inputs by path and by count.
-3. The Document Ingest shall exclude from image-to-text conversion any image whose dimensions fall below a configured minimum, and shall report the number of images so excluded.
-4. When an image-to-text result is obtained, the Document Ingest shall retain it keyed by the image content, the model identifier and the prompt version.
-5. When a routed image's content, the configured model identifier and the prompt version all match a retained result, the Document Ingest shall reuse that result and shall not issue a new conversion request.
-6. If an image-to-text request fails or the service is unreachable, then the Document Ingest shall record that input as failed with the reason and shall continue the run.
-7. The Document Ingest shall accept the vision model identifier as configuration.
-8. The Document Ingest shall mark every chunk derived from image-to-text conversion as vision-derived, together with the model identifier that produced it.
+1. Where the configured detector, recognizer and digit-checker files are present, the Document Ingest shall convert each routed image to text by local detection and recognition and shall emit the result as a chunk of a distinct kind carrying a reference to the source image.
+2. Where any of the detector, recognizer or digit-checker files is absent, the Document Ingest shall skip every input that requires OCR and shall report those inputs by path and by count, naming the missing capability.
+3. The Document Ingest shall exclude from OCR any image whose dimensions fall below a configured minimum, and shall report the number of images so excluded.
+4. When an OCR result is obtained, the Document Ingest shall retain it keyed by the image content, the primary recognizer identifier and the OCR pipeline version.
+5. When a routed image's content, the configured recognizer identifier and the OCR pipeline version all match a retained result, the Document Ingest shall reuse that result and shall not run OCR again.
+6. If OCR of an image fails, then the Document Ingest shall record that input as failed with the reason and shall continue the run.
+7. The Document Ingest shall accept the detector, recognizer and digit-checker identities as configuration.
+8. The Document Ingest shall mark every chunk derived from OCR as vision-derived, together with the recognizer identifier that produced it.
+9. The Document Ingest shall emit a numeric token from OCR only when the primary recognizer and the digit checker agree on that token after normalisation, and shall omit a number that only one engine produced.
+10. Where an image reference already carries chart source ranges, the Document Ingest shall emit those ranges as the figure text and shall not run OCR on that reference.
 
 ### Requirement 6: Chunking Against the Token Budget
 
@@ -138,11 +140,11 @@ Its defining constraint is locality. Embedding, extraction, chunking and hashing
 #### Acceptance Criteria
 
 1. The Document Ingest shall persist per-file state sufficient to classify a file on a later run as new, changed, unchanged or deleted.
-2. The per-file state shall incorporate the file's content together with every parameter that affects the file's output, including the token budget, the overlap, the routing thresholds, and — for anything vision-derived — the model identifier and the prompt version.
+2. The per-file state shall incorporate the file's content together with every parameter that affects the file's output, including the token budget, the overlap, the routing thresholds, and — for anything OCR-derived — the recognizer identifier and the OCR pipeline version.
 3. When a run encounters a file classified as unchanged, the Document Ingest shall reuse the previously emitted records for that file and shall not extract it again.
 4. When a file present in a previous run is absent from the current run, the Document Ingest shall report the records derived from it as removed.
 5. When any output-affecting parameter differs from the value recorded in a file's persisted state, the Document Ingest shall classify that file as changed.
-6. When a run is repeated with no file and no parameter changed, the Document Ingest shall extract no file, issue no image-to-text request, and report that no work was required.
+6. When a run is repeated with no file and no parameter changed, the Document Ingest shall extract no file, run no OCR, and report that no work was required.
 
 ### Requirement 9: Failure Isolation and Run Reporting
 
@@ -156,14 +158,14 @@ Its defining constraint is locality. Embedding, extraction, chunking and hashing
 4. When an input is skipped because a capability is unavailable rather than because it is unwanted, the Document Ingest shall state which capability was missing.
 5. The Document Ingest shall complete a run and produce its report even when every file fails.
 
-### Requirement 10: Locality and Credential Handling
+### Requirement 10: Locality
 
-**Objective:** As the archive owner, I want a local-first system to stay local, so that adding one optional convenience does not quietly turn my archive into someone else's traffic.
+**Objective:** As the archive owner, I want a local-first system to stay local, so that optional OCR does not open a network path and does not invent content.
 
 #### Acceptance Criteria
 
 1. The Document Ingest shall complete a run without an NPU present.
-2. Where no vision credential is configured, the Document Ingest shall complete a run with no network access available.
-3. The Document Ingest shall issue no network request other than image-to-text conversion.
-4. The Document Ingest shall read the vision credential from configuration, and shall not write it to any log, report, emitted record or error message.
-5. If the vision credential is absent or rejected, then the Document Ingest shall report that image-to-text conversion is unavailable and shall complete the run using the local paths alone.
+2. The Document Ingest shall complete a run with no network access available.
+3. The Document Ingest shall issue no network request.
+4. The Document Ingest shall not read a hosted-vision credential, and shall not write any secret to any log, report, emitted record or error message.
+5. If the detector, recognizer or digit-checker files are absent, then the Document Ingest shall report that OCR is unavailable, naming the missing capability, and shall complete the run using the local extraction paths alone.

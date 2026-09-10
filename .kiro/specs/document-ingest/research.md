@@ -2,11 +2,11 @@
 
 ## Summary
 - **Feature**: `document-ingest`
-- **Discovery Scope**: New Feature (greenfield package) with one Complex Integration (a hosted vision API) and a hard contract dependency on the closed `npu-embedding-runtime` spec.
+- **Discovery Scope**: New Feature (greenfield package) with a local OCR integration (InfiniFlow det+rec, reversed from hosted vision on 2026-09-10) and a hard contract dependency on the closed `npu-embedding-runtime` spec.
 - **Key Findings**:
   - Every image-bearing input — Markdown image references, PDF pages without a text layer, standalone raster files, charts embedded in worksheets — reduces to one capability: *describe this image as text*. One seam, four producers.
   - `openpyxl` can read an existing chart's source cell ranges and a worksheet's anchored images, but only through private attributes (`ws._charts`, `ws._images`). It never evaluates formulas: `data_only=True` yields `None` for any formula cell in a file not last saved by Excel, which will be common.
-  - The hosted call is non-deterministic even at `temperature=0`, per OpenRouter's own documentation. Reproducibility therefore comes from caching by input, never from re-running.
+  - Hosted VLMs can invent numbers; withdrawn 2026-09-10 in favour of InfiniFlow det+rec plus a Tesseract digit vote. Reproducibility comes from deterministic local models and a cache keyed by image hash plus pipeline version.
   - `httpx` (0.28.1) and `markdown-it-py` (4.2.0) are already installed transitively, so the HTTP client and the Markdown parser cost no new dependency — but both must be declared explicitly, since importing a transitive dependency directly breaks the day `huggingface-hub` drops it.
 
 ## Research Log
@@ -126,28 +126,33 @@
 - **Selected Approach**: Every candidate chunk is measured as `DocumentText(content=chunk_text, title=document_title)` under `TextKind.DOCUMENT`.
 - **Rationale**: Measuring bare content would under-count every titled document by the title's token cost and violate 6.3 at embedding time — precisely the untested join this project has been bitten by.
 
-### Synthesis outcomes
+### Decision: Local det+rec OCR; hosted VLM withdrawn (2026-09-10)
+- **Context**: Owner rejected invented numbers in quantitative and engineering material. OpenRouter was not yet implemented (tasks 5.1/5.2 pending). Tesseract as known a decade ago is not the primary engine.
+- **Sources Consulted**: InfiniFlow/deepdoc on Hugging Face (`det.onnx` ~4.8 MB, `rec.onnx` ~10.8 MB, Apache-2.0); RAGFlow DeepDoc README (layout/TSR are extra YOLO models); Ryzen AI 1.8 model compatibility (CNN INT8/BF16 on STX, no shipped OCR SKU); RapidOCR as the ONNX packaging of PP-OCR; Tesseract 5 LSTM as an independent architecture for a second vote.
+- **Selected Approach**: Primary OCR is InfiniFlow `det` + `rec` on CPU ONNX Runtime. Digit checker is Tesseract 5 on the same crops. A numeric token is kept only when both agree after normalisation. Layout and TSR stay out. Native Excel chart ranges skip OCR. No HTTP. NPU compile of `det` is a later spike.
+- **Rationale**: VLMs paraphrase and can invent numbers. Classic Tesseract-3 is the wrong primary. Dual-engine agreement on digits is the cheapest way to refuse a number rather than guess one. The ImageRef seam already exists; only the describer changes.
+- **Trade-offs**: Unlabelled diagrams with no readable text become omissions, not captions. Tesseract must be present or OCR is unavailable (fail closed on numbers). Two engines per box cost CPU; cache still makes re-runs free.
+
+## Synthesis outcomes
 - **Generalisation**: four image producers → one `ImageRef` seam; five chunk kinds → one `ChunkRecord` with a `kind` discriminator; seven ways a file can be skipped or fail → one `Omission` record shape carrying a category and a reason.
-- **Build vs adopt**: adopt `markdown-it-py`, `pypdfium2`, `openpyxl`, `httpx`, `pillow`, stdlib `sqlite3`/`hashlib`; build only block detection (no library does it) and the orchestration.
+- **Build vs adopt**: adopt `markdown-it-py`, `pypdfium2`, `openpyxl`, `pillow`, InfiniFlow det/rec ONNX, stdlib `sqlite3`/`hashlib`; build block detection and the numeric-agreement glue. `httpx` is no longer an ingest dependency.
 - **Simplification**: no `calamine` fallback; no extractor registry; no separate normaliser component (a pure function in `chunk.py`); no daemon; concurrency confined to the describer.
 
 ## Risks & Mitigations
 - **openpyxl private attributes change** — one adapter function, pinned version, committed fixture workbook with an image and a chart as a smoke test.
 - **Formula cells read as `None` in most owner-authored workbooks** — first-class omission path with a specific reason; the report counts them so the owner sees it after the first run.
 - **Multi-column PDFs extract in the wrong order** — accepted for text-layer pages; recorded as a limitation; the vision route is the remedy if material.
-- **Unverified OpenRouter image-size limit** — verify against the largest archive images during implementation; downscale before sending if a limit is found.
-- **Rate limiting during a 3,837-image first run** — bounded concurrency, `Retry-After` honoured, per-image failures recorded and the run continues (5.6, 9.1).
+- **OCR misreads a digit** — second-engine vote drops disagreed numbers rather than keeping the primary guess (5.9).
 - **The 512-token contract is unverified upstream** — requirement 6.7 is a two-way test against the real tokenizer; it runs in the standing suite with the ungated control tokenizer and opt-in against the gated default.
-- **Credential leakage via tracebacks or logs** — mirror `HfCredential`: `reveal()` at one call site, errors re-raised `from None`, no request logging.
+- **Hosted-vision credential accidentally consulted** — task 1.5 module remains until cleanup; 5.x and 8.2 tests must prove it is not imported.
 
 ## References
 - [openpyxl images](https://openpyxl.readthedocs.io/en/3.1/images.html) — write path is documented; read path is private.
 - [openpyxl chart series API](https://openpyxl.readthedocs.io/en/stable/api/openpyxl.chart.series.html) — `numRef.f` range strings.
 - [openpyxl worksheet API](https://openpyxl.readthedocs.io/en/stable/api/openpyxl.worksheet.worksheet.html) — `sheet_state`, `merged_cells`.
 - [pypdfium2](https://pypdfium2.readthedocs.io/en/stable/readme.html) — text, render, objects.
-- [OpenRouter multimodal images](https://openrouter.ai/docs/docs/overview/multimodal/images) — request shape.
-- [OpenRouter limits](https://openrouter.ai/docs/api_reference/limits) — 429 and `Retry-After`.
-- [OpenRouter parameters](https://openrouter.ai/docs/api_reference/parameters) — determinism not guaranteed.
-- [OpenRouter Mistral models](https://openrouter.ai/mistralai) — ids and pricing.
+- [InfiniFlow/deepdoc](https://huggingface.co/InfiniFlow/deepdoc) — `det.onnx`, `rec.onnx`, Apache-2.0.
+- [RAGFlow DeepDoc README](https://github.com/infiniflow/ragflow/blob/main/deepdoc/README.md) — OCR vs layout vs TSR.
+- [RapidOCR](https://github.com/RapidAI/RapidOCR) — PP-OCR ONNX packaging without PaddlePaddle.
 - [markdown-it-py token API](https://markdown-it-py.readthedocs.io/en/latest/api/markdown_it.token.html) — `token.map`.
 - [python-calamine](https://pypi.org/project/python-calamine/) — evaluated, not adopted.

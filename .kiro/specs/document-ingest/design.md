@@ -6,19 +6,19 @@
 
 **Users**: The archive owner runs it on demand after new files arrive. `vector-index` consumes its records; `search-cli` surfaces its run report.
 
-**Impact**: Greenfield. It adds a sibling package `npu_rag.ingest` beside the closed `npu_rag.embedding` runtime and consumes that runtime's tokenizer and text types as a library. It introduces the project's only outbound network call — image-to-text via OpenRouter — and confines it to one module.
+**Impact**: Greenfield. It adds a sibling package `npu_rag.ingest` beside the closed `npu_rag.embedding` runtime and consumes that runtime's tokenizer and text types as a library. Image-to-text is local det+rec OCR in `vision.py`. There is no outbound network call.
 
 ### Goals
 - One call walks configured roots and yields embedding-ready `ChunkRecord`s with a stable identity and a source locator on every record.
-- Extraction is routed by inspected content so the paid, hosted path is used only for images and textless pages.
+- Extraction is routed by inspected content so OCR is used only for images and textless pages.
 - Spreadsheets are chunked by labelled block with their labels and period headers intact; values and formulas are both searchable.
 - A re-run with nothing changed extracts nothing, calls nothing and says so.
-- The pipeline is complete with no NPU, no network and no credential; what it cannot do is reported by path and reason.
+- The pipeline is complete with no NPU, no network and no OCR models; what it cannot do is reported by path and reason. It never invents a number.
 
 ### Non-Goals
 - Producing vectors, storing chunks or vectors, choosing the token budget, or deciding which tokenizer is authoritative — all owned upstream or downstream.
 - A local OCR or layout model stack (evaluated and rejected; see `research.md`).
-- Any hosted call other than image-to-text. A daemon or file watcher. Near-duplicate detection across files.
+- Any hosted call. A daemon or file watcher. Near-duplicate detection across files. DeepDoc layout/TSR. NPU compile of OCR.
 - Reading-order recovery for multi-column PDF text layers; the vision route is the remedy if it proves material.
 
 ## Boundary Commitments
@@ -27,7 +27,7 @@
 - Discovery under configurable roots, include/exclude filtering, and de-duplication across overlapping roots.
 - Routing each file to an extraction path by type **and** inspected content, including the per-page text-layer decision inside PDFs.
 - Extraction for Markdown, plain text, PDF, Excel workbooks and standalone raster images, each behind the one `Extractor` protocol, each emitting the one `Segment` vocabulary.
-- The image-to-text seam: size threshold, result cache, the OpenRouter adapter, absent-credential degradation, and provenance marking of everything vision-derived.
+- The image-to-text seam: size threshold, result cache, local det+rec OCR with a second-engine vote on numeric tokens, absent-model degradation, native chart ranges indexed without OCR, and provenance marking of everything OCR-derived.
 - Token-budget chunking against the runtime's tokenizer, the per-kind overlap policy, heading-aware splitting, and block splitting with repeated headers.
 - Chunk identity and per-file state: content and parameter fingerprints, new/changed/unchanged/deleted classification, the chunk registry that makes deletions reportable, and the vision cache.
 - Per-file failure isolation and the run report.
@@ -37,23 +37,22 @@
 - Embedding, vector storage, retrieval — `npu-embedding-runtime`, `vector-index`.
 - The value of the token budget and the tokenizer itself — supplied by the runtime via `ModelTokenizer`; never re-implemented or approximated here.
 - Acquiring, scraping or modifying source documents; the archive is read-only to this feature.
-- Choosing or benchmarking vision models; the model id is configuration.
+- Choosing or benchmarking OCR models beyond the InfiniFlow det+rec pair and the Tesseract digit checker; identities are configuration.
 - Removing records from any downstream store on deletion. This feature **reports** removed chunk ids (8.4); `vector-index` acts on them.
-- Any second spreadsheet reader, any OCR model, any per-figure captioning beyond the one describer call.
+- Any second spreadsheet reader, DeepDoc layout/TSR, hosted image-to-text, figure captioning.
 
 ### Allowed Dependencies
 - `npu_rag.embedding` — `ModelTokenizer` (`.tokenize`), `DocumentText` and `TextKind` (`.types`), `MISSING_TITLE_SENTINEL` (`.profiles`), and `find_dotenv`, `parse_dotenv`, `REDACTED` (`.models.acquire`). The runtime's package root exports nothing, so these are imported by submodule path. `models.acquire` imports `huggingface_hub` at module scope; that transitive import is **accepted** — it issues no request at import time, and the tokenizer the caller hands in is loaded through the same module regardless. This is the intended direction; the runtime's own guard forbids the reverse and stays untouched.
 - Standard library: `sqlite3`, `hashlib`, `pathlib`, `json`, `base64`, `concurrent.futures`.
-- Third-party, declared in `[project]`: `markdown-it-py` (already transitively installed), `httpx` (already transitively installed), `openpyxl`, `pypdfium2`, `pillow`.
-- Network: **only** `vision.py` may open a connection, and only to the configured OpenRouter base URL. No other module imports `httpx`.
+- Third-party, declared in `[project]`: `markdown-it-py`, `openpyxl`, `pypdfium2`, `pillow`, `onnxruntime` (already present for embedding). OCR models are files on disk (`InfiniFlow/deepdoc` `det.onnx` + `rec.onnx`), not a Python package import of RAGFlow. Tesseract 5 is a local binary consulted only as the digit checker.
+- Network: **no module may open a connection.** The layer guard asserts that `httpx` is imported nowhere under `npu_rag.ingest`. `huggingface_hub` remains an accepted transitive import of the runtime's acquire module at import time, issuing no request.
 - Constraint: modules import only leftward along the dependency direction below; `extract/*` may not import `vision`; nothing imports `pipeline` except the caller.
 
 ### Revalidation Triggers
 - `ChunkRecord` or `ChunkKind` changes shape or gains a member → `vector-index` must re-check its schema and its per-kind handling.
 - `RunReport` or `Omission` changes shape → `search-cli` must re-check its rendering.
 - The runtime changes `ModelTokenizer.count_tokens`, the document template, or the compiled length → requirement 6.7's contract test must be re-run and `params_fingerprint` inputs re-checked.
-- The vision prompt text or `PROMPT_VERSION` changes → every cached result is invalidated by design; the owner must expect a paid re-run over all images.
-- The default model id changes → same as above.
+- The OCR pipeline version (detector, recognizer or digit-checker identity) changes → every cached result is invalidated by design; the owner must expect a full OCR re-run over affected images.
 - A sixth chunk kind or a fifth extractor is added → the layer guard's `LAYER_ORDER` and the no-overlap policy table must be updated together.
 
 ## Architecture
@@ -66,14 +65,14 @@ A staged pipeline in the runtime's ports-and-adapters style. Extractors are adap
 graph TB
     subgraph Inputs
         Roots[Configured roots]
-        Env[dotenv credential]
+        Models[Local det rec checker files]
     end
     subgraph Ingest
         Discover[Discoverer]
         Route[Router]
         Extract[Extractors]
         Resolve[ImageRef resolution]
-        Describe[OpenRouterDescriber]
+        Describe[LocalOcrDescriber]
         Chunk[Chunker]
         State[StateStore]
         Pipeline[IngestPipeline]
@@ -86,12 +85,11 @@ graph TB
         VI[vector index]
         CLI[search cli]
     end
-    OR[OpenRouter]
 
     Roots --> Discover --> Route --> Extract --> Resolve --> Chunk --> Pipeline
-    Env --> Describe
+    Models --> Describe
     Resolve --> State
-    Resolve --> Describe --> OR
+    Resolve --> Describe
     Chunk --> Tok
     Pipeline --> State
     Pipeline --> Report
@@ -101,8 +99,8 @@ graph TB
 
 **Architecture Integration**:
 - Selected pattern: staged pipeline with per-format adapters; one `ImageRef` seam for all four image producers.
-- Domain boundaries: extraction is pure and offline; resolution owns cost, cache and credential; chunking owns the budget; state owns persistence; the pipeline owns sequencing and isolation.
-- Existing patterns preserved: redacting credential object with a single `reveal()`; errors carrying a `stage`; omissions carrying a reason and never a substituted value; a package-wide layer guard.
+- Domain boundaries: extraction is pure and offline; resolution owns cache, model presence and OCR; chunking owns the budget; state owns persistence; the pipeline owns sequencing and isolation.
+- Existing patterns preserved: errors carrying a `stage`; omissions carrying a reason and never a substituted value; a package-wide layer guard. Hosted credentials are withdrawn.
 - Steering compliance: uv-managed Python 3.12, lean default dependencies, Windows-first paths, no NPU or network required to run.
 
 **Dependency direction** (each module imports only from modules to its left; enforced by a guard test):
@@ -119,8 +117,8 @@ types, errors → config → credential → identity → state → discover → 
 | Markdown | `markdown-it-py` 4.2 | token stream with line provenance; headings, tables, image refs | already installed transitively; declare explicitly |
 | PDF | `pypdfium2` 5.13 | per-page text probe and extraction; page rasterisation for the vision path | one dependency for both jobs; `pdfplumber` rejected |
 | Spreadsheets | `openpyxl` 3.1.5 | cells, merged ranges, hidden sheets, formulas; anchored images and chart source ranges via one adapter over private attributes | two loads per workbook; `calamine` dropped |
-| Images | `pillow` | dimensions for the size threshold; encoding for the request payload | new dependency |
-| HTTP | `httpx` 0.28 | the single outbound call; `MockTransport` for offline tests | already installed transitively; declare explicitly |
+| Images | `pillow` | dimensions for the size threshold; raster for OCR | already added |
+| OCR | InfiniFlow `det.onnx` + `rec.onnx` on CPU ONNX Runtime; Tesseract 5 LSTM as digit checker | transcribe visible text; second vote on numeric tokens | Apache-2.0 models; no PaddlePaddle; no HTTP |
 | State / cache | stdlib `sqlite3` | file state, chunk registry, vision cache in one file | transactional per file; no dependency |
 | Tokenizer | `npu_rag.embedding.tokenize.ModelTokenizer` | every chunk measurement | never approximated |
 
@@ -133,7 +131,7 @@ src/npu_rag/ingest/
 ├── types.py               # SourceFile, Locator kinds, Segment kinds incl. ImageRef, ChunkKind, ChunkRecord, Omission, RunReport
 ├── errors.py              # IngestError taxonomy with stage and path: DiscoveryError, ExtractionError, VisionError, StateError
 ├── config.py              # IngestConfig: roots, include/exclude, token budget, overlap, thresholds, model id, prompt version, state path
-├── credential.py          # OpenRouterCredential mirroring HfCredential; discover_openrouter_credential via the runtime's dotenv helpers
+├── credential.py          # withdrawn 2026-09-10; OpenRouterCredential must not be consulted; removal is a later cleanup
 ├── identity.py            # params_fingerprint, file content hash, chunk_id derivation
 ├── state.py               # StateStore over sqlite3: file_state, chunk_registry, vision_cache; classification queries
 ├── discover.py            # Discoverer: walk roots with long-path support, include/exclude, de-dup across overlapping roots, author from directory
@@ -146,21 +144,21 @@ src/npu_rag/ingest/
 │   ├── pdf.py             # pypdfium2: per-page text or ImageRef of the rendered page; page locators
 │   ├── excel.py           # openpyxl: blank-row blocks, merged-cell attribution, values+formulas, hidden sheets, charts and images adapter
 │   └── image.py           # standalone raster file -> one ImageRef with dimensions
-├── vision.py              # VisionDescriber protocol; OpenRouterDescriber over httpx; size threshold; cache-through via StateStore; PROMPT_VERSION
+├── vision.py              # VisionDescriber protocol; LocalOcrDescriber (det+rec); numeric agreement with Tesseract; cache-through via StateStore; PIPELINE_VERSION
 ├── chunk.py               # Chunker over ModelTokenizer: budget, per-kind overlap, heading-aware split, block split with repeated header
 ├── report.py              # RunReport counting and human-readable rendering
 └── pipeline.py            # IngestPipeline: discover -> route -> extract -> resolve ImageRefs -> chunk -> persist -> report; per-file isolation
 
 tests/ingest/
-├── test_package_baseline.py   # layer guard for npu_rag.ingest; extract/* may not import vision; only vision imports httpx
+├── test_package_baseline.py   # layer guard for npu_rag.ingest; extract/* may not import vision; httpx imported nowhere under ingest
 ├── test_types.py, test_errors.py, test_config.py, test_credential.py, test_identity.py, test_state.py, test_discover.py, test_route.py, test_report.py
 ├── extract/test_markdown.py, test_text.py, test_pdf.py, test_excel.py, test_image.py
-├── test_vision.py             # fake describer; OpenRouterDescriber over httpx MockTransport; 429 and Retry-After; redaction
+├── test_vision.py             # fake describer; LocalOcrDescriber over committed ONNX fixtures; numeric agreement; chart_ranges skip OCR
 ├── test_chunk.py              # budget, overlap policy, heading split, block split; measured with the title attached
 ├── conftest.py                # the offline tokenizer fixture: a real, ungated tokenizer loaded from committed files, never from the network
 ├── test_pipeline.py           # per-file isolation and the entry point
 ├── test_incremental.py        # no-op re-run, deletion reporting, parameter reclassification
-├── test_offline.py            # absent credential, zero requests, no runtime provider imports
+├── test_offline.py            # absent OCR models, zero network requests, no runtime provider imports
 ├── test_failure_isolation.py  # a mixed root of corrupt files; an all-bad root
 ├── test_token_contract.py     # requirement 6.7 both ways; unconditional against the offline tokenizer, opt-in against the gated default
 └── fixtures/
@@ -190,7 +188,7 @@ sequenceDiagram
     participant R as Router
     participant X as Extractor
     participant V as ImageRef resolution
-    participant D as OpenRouterDescriber
+    participant D as LocalOcrDescriber
     participant C as Chunker
     participant T as ModelTokenizer
 
@@ -208,11 +206,11 @@ sequenceDiagram
             V->>S: cache lookup by image hash, model id, prompt version
             alt hit
                 S-->>V: text
-            else miss and credential present and above threshold
+            else miss and models present and above threshold and no chart_ranges
                 V->>D: describe(image)
-                D-->>V: text or failure
+                D-->>V: transcribed text or failure
                 V->>S: cache store
-            else miss and no credential or below threshold
+            else miss and (no models or below threshold)
                 V-->>P: Omission with reason
             end
         end
@@ -223,7 +221,7 @@ sequenceDiagram
     end
 ```
 
-Flow-level decisions: classification happens before any extraction, so an unchanged file costs one hash and one query. Image resolution is the only stage that can spend money and it is gated three ways — cache, credential, threshold — before a request is made. The per-file `commit` is atomic, so a crash mid-run leaves every completed file consistent and every incomplete file classified as new on the next run.
+Flow-level decisions: classification happens before any extraction, so an unchanged file costs one hash and one query. Image resolution is the only stage that runs OCR and it is gated by threshold, native chart ranges, cache, and model presence before a session is opened. The per-file `commit` is atomic, so a crash mid-run leaves every completed file consistent and every incomplete file classified as new on the next run.
 
 File classification is a small state machine:
 
@@ -260,13 +258,15 @@ stateDiagram-v2
 | 4.6 | embedded charts and images routed to vision | `ExcelExtractor` | `ImageRef` from the anchored-object adapter | sequence |
 | 4.7 | chart source ranges read directly | `ExcelExtractor` | `ChartRanges` on the `ImageRef` | — |
 | 4.8 | hidden sheets skipped and named | `ExcelExtractor` | `Omission(category=HIDDEN_SHEET)` | — |
-| 5.1 | vision result emitted as a distinct kind with its image reference | ImageRef resolution, `Chunker` | `FigureSegment` → `ChunkKind.FIGURE` | sequence |
-| 5.2 | no credential: skip and report by path and count | ImageRef resolution, `RunReport` | `Omission(category=VISION_UNAVAILABLE)` | sequence |
+| 5.1 | OCR result emitted as a distinct kind with its image reference | ImageRef resolution, `Chunker` | `FigureSegment` → `ChunkKind.FIGURE` | sequence |
+| 5.2 | models absent: skip and report by path and count | ImageRef resolution, `RunReport` | `Omission(category=VISION_UNAVAILABLE)` | sequence |
 | 5.3 | size threshold, count reported | ImageRef resolution, `IngestConfig.min_image_pixels` | `Omission(category=BELOW_THRESHOLD)`, counted | sequence |
-| 5.4, 5.5 | cache by image, model, prompt version; hit issues no request | `StateStore.vision_cache`, ImageRef resolution | `StateStore.cached_description` | sequence |
-| 5.6 | request failure recorded, run continues | `OpenRouterDescriber` | `VisionError` → `Omission(category=VISION_FAILED)` | sequence |
-| 5.7 | model id is configuration | `IngestConfig.vision_model` | — | — |
-| 5.8 | vision-derived chunks marked with model id | `ChunkRecord.provenance` | `Provenance(vision_model, prompt_version)` | — |
+| 5.4, 5.5 | cache by image, recognizer id, pipeline version; hit runs no OCR | `StateStore.vision_cache`, ImageRef resolution | `StateStore.cached_description` | sequence |
+| 5.6 | OCR failure recorded, run continues | `LocalOcrDescriber` | `VisionError` → `Omission(category=VISION_FAILED)` | sequence |
+| 5.7 | detector, recognizer, checker ids are configuration | `IngestConfig` | — | — |
+| 5.8 | OCR-derived chunks marked with recognizer id | `ChunkRecord.provenance` | `Provenance` fields reused as recognizer id + pipeline version | — |
+| 5.9 | numeric tokens kept only when both local engines agree | `LocalOcrDescriber` | disagreed digits omitted | sequence |
+| 5.10 | native chart ranges are the figure text; no OCR | ImageRef resolution | `chart_ranges` short-circuit | sequence |
 | 6.1, 6.2, 6.3 | budget is input; runtime tokenizer; never over budget | `Chunker` | `Chunker.__init__(tokenizer, budget)`; `count_tokens(DocumentText, DOCUMENT)` | sequence |
 | 6.4, 6.5 | overlap on prose only | `Chunker` | `OVERLAP_POLICY: dict[ChunkKind, bool]` | — |
 | 6.6 | heading-aware split | `Chunker` | splits at `heading_path` change first | — |
@@ -282,21 +282,21 @@ stateDiagram-v2
 | 9.2, 9.3, 9.4 | counts; skipped and failed listed with reason; missing capability named | `RunReport`, `report.render` | `Omission.reason`, `Omission.missing_capability` | — |
 | 9.5 | run completes when every file fails | `IngestPipeline` | report always produced | — |
 | 10.1 | no NPU required | whole package | no import of providers or sessions | — |
-| 10.2, 10.3 | no network without credential; only image-to-text | `vision.py` sole importer of `httpx`; layer guard | `test_package_baseline` | — |
-| 10.4 | credential never written out | `OpenRouterCredential` | `reveal()` at one call site; `from None` re-raise | — |
-| 10.5 | absent or rejected credential degrades to local paths | ImageRef resolution, `OpenRouterDescriber` | 401/403 → `VISION_UNAVAILABLE` for the run | sequence |
+| 10.2, 10.3 | no network during ingest | layer guard: `httpx` imported nowhere under ingest | `test_package_baseline` | — |
+| 10.4 | no hosted-vision credential is read | ingest must not consult `OpenRouterCredential` | — | — |
+| 10.5 | absent OCR models degrade to local paths | ImageRef resolution, `LocalOcrDescriber` | `VISION_UNAVAILABLE` naming the missing file | sequence |
 
 ## Components and Interfaces
 
 | Component | Domain/Layer | Intent | Req Coverage | Key Dependencies (P0/P1) | Contracts |
 |-----------|--------------|--------|--------------|--------------------------|-----------|
 | `IngestConfig` | config | every tunable in one frozen object | 1.1, 1.3, 2.5, 5.3, 5.7, 6.1, 6.4 | — | State |
-| `OpenRouterCredential` | credential | a secret that cannot render itself | 10.4, 10.5 | runtime dotenv helpers (P0) | Service |
+| `OpenRouterCredential` | credential | **withdrawn 2026-09-10** — must not be consulted | — | — | — |
 | `Discoverer` | discovery | roots → `SourceFile`s, de-duplicated, author derived | 1.1–1.6, 7.2 | `IngestConfig` (P0) | Service |
 | `Router` | routing | `SourceFile` → extraction path | 2.1, 2.4 | — | Service |
 | `Extractor` protocol + 5 adapters | extraction | file → `Extracted` segments, offline | 2.2, 2.3, 3.x, 4.x | `pypdfium2`, `openpyxl`, `markdown-it-py` (P0) | Service |
 | ImageRef resolution | vision seam | gate, cache, describe, mark | 5.1–5.6, 5.8, 10.5 | `StateStore`, `VisionDescriber` (P0) | Service |
-| `OpenRouterDescriber` | vision adapter | the one outbound call | 5.6, 10.2, 10.3, 10.4 | `httpx` (P0), `OpenRouterCredential` (P0) | API |
+| `LocalOcrDescriber` | vision adapter | det+rec on CPU plus digit checker | 5.1, 5.6, 5.9, 10.2, 10.3, 10.5 | InfiniFlow ONNX (P1), Tesseract (P1) | Service |
 | `Chunker` | chunking | segments → `ChunkRecord`s within budget | 4.2, 4.3, 6.1–6.6 | `ModelTokenizer` (P0) | Service |
 | `identity` | identity | fingerprints and chunk ids | 7.4, 7.5, 8.2, 8.5 | — | Service |
 | `StateStore` | persistence | file state, chunk registry, vision cache | 5.4, 5.5, 8.1–8.5 | `sqlite3` (P0) | State |
@@ -350,31 +350,32 @@ Segment = ProseSegment | TableSegment | BlockSegment | FormulaSegment | ImageRef
 
 ### Vision seam
 
-#### ImageRef resolution and `OpenRouterDescriber`
+#### ImageRef resolution and `LocalOcrDescriber`
 
 | Field | Detail |
 |-------|--------|
-| Intent | Replace each `ImageRef` with a `FigureSegment` or an `Omission`, spending money only after cache, credential and threshold have all said yes |
-| Requirements | 5.1–5.8, 10.2–10.5 |
+| Intent | Replace each `ImageRef` with a `FigureSegment` or an `Omission` by transcribing visible text locally, never by describing or guessing |
+| Requirements | 5.1–5.10, 10.1–10.5 |
 
 **Responsibilities & Constraints**
-- Resolution order per `ImageRef`: threshold (5.3) → cache (5.5) → credential (5.2) → describe (5.1) → cache store (5.4). Each refusal is an `Omission` with its own category, so the report can say which gate closed.
-- `OpenRouterDescriber` is the **only** module that imports `httpx` and the only module that may open a connection (10.3, guarded). Request: `POST {base_url}/chat/completions` with a text part (the versioned prompt) then one `image_url` part carrying a base64 data URL; `temperature=0` for stability, without assuming determinism.
-- Honours `Retry-After` on 429 and a per-image timeout. 401/403 marks vision unavailable **for the rest of the run** rather than retrying every image (10.5). Any other failure is a per-image `VisionError` (5.6). The describer handles **one image per call**; fan-out is not its concern.
-- **Concurrency is owned by resolution, not the describer.** `resolve_all` runs the bounded pool (`vision_concurrency`, default 4) over the cache misses of a file's `ImageRef`s, so the in-flight bound holds across images. A single-image describer cannot bound anything across images, which is why the pool lives one level up. *(Corrected 2026-09-08 at task planning.)*
-- The credential is revealed at exactly one line, inside the request construction; `httpx` exceptions are re-raised as `VisionError` **`from None`** so no chained traceback carries headers (10.4).
+- Resolution order per `ImageRef`: threshold (5.3) → `chart_ranges` present (5.10) → cache (5.5) → models present (5.2) → describe (5.1, 5.9) → cache store (5.4). Each refusal is an `Omission` with its own category.
+- Where `chart_ranges` is set, emit figure text from those ranges and **do not** run OCR. Native Excel charts have exact ranges and no usable raster.
+- `LocalOcrDescriber` loads InfiniFlow `det.onnx` and `rec.onnx` through ONNX Runtime **CPU**. It never imports `httpx`. It never opens a socket. Missing model files raise `VisionUnavailable` for the rest of the run.
+- After recognition, numeric tokens (integers, decimals, percentages, currency amounts) are kept only when Tesseract 5 LSTM, run on the same crop, produces the same normalised digits (5.9). A number seen in only one engine is dropped. If that emptying leaves no text, the image is `Omission(NUMERIC_DISAGREED)` (new category on `OmissionCategory`, added in task 5.1). Non-numeric text from the primary recognizer may remain.
+- The describer handles **one image per call**. `resolve_all` owns the bounded pool (`vision_concurrency`, default 4).
+- `Provenance.vision_model` is the primary recognizer id. `Provenance.prompt_version` is the OCR pipeline version string (det + rec + checker). The field name is kept so `ChunkRecord` JSON from task 1.2 does not change shape.
 
 **Dependencies**
 - Inbound: `IngestPipeline` (P0)
-- Outbound: `StateStore.vision_cache` (P0), `OpenRouterCredential` (P0), `IngestConfig` (P0)
-- External: OpenRouter chat-completions API (P1 — optional, degradable)
+- Outbound: `StateStore.vision_cache` (P0), `IngestConfig` (P0)
+- External: InfiniFlow DeepDoc ONNX files (P1 — optional, degradable); Tesseract 5 binary (P1 — optional, degradable)
 
-**Contracts**: Service [x] / API [x]
+**Contracts**: Service [x]
 
 ##### Service Interface
 ```python
 class VisionDescriber(Protocol):
-    def describe(self, image: ImageRef) -> str: ...     # raises VisionError; raises VisionUnavailable on 401/403
+    def describe(self, image: ImageRef) -> str: ...     # raises VisionError; raises VisionUnavailable if models absent
 
 @dataclass(frozen=True)
 class Resolved:
@@ -385,21 +386,16 @@ def resolve(ref: ImageRef, *, store: StateStore, describer: VisionDescriber | No
             config: IngestConfig) -> Resolved: ...
 
 def resolve_all(refs: Sequence[ImageRef], *, store: StateStore, describer: VisionDescriber | None,
-                config: IngestConfig) -> tuple[Resolved, ...]: ...   # owns the bounded pool; order preserved
+                config: IngestConfig) -> tuple[Resolved, ...]: ...
 ```
 - Preconditions: `ref.width`/`ref.height` known.
-- Postconditions: on success the returned `FigureSegment.provenance` names the model id and `PROMPT_VERSION`; on any refusal `omission.category` is one of `BELOW_THRESHOLD`, `VISION_UNAVAILABLE`, `VISION_FAILED`.
-- Invariants: a cache hit never constructs an HTTP client; `describer is None` never raises.
-
-##### API Contract
-| Method | Endpoint | Request | Response | Errors |
-|--------|----------|---------|----------|--------|
-| POST | `{base_url}/chat/completions` | `{model, temperature: 0, messages: [{role: user, content: [{type: text, text: PROMPT}, {type: image_url, image_url: {url: data URL}}]}]}` | `choices[0].message.content` | 401/403 → unavailable for run; 429 → wait `Retry-After` then retry once; 4xx/5xx/timeout → `VisionError` |
+- Postconditions: on success `FigureSegment.provenance` names the recognizer id and pipeline version; on refusal `omission.category` is one of `BELOW_THRESHOLD`, `VISION_UNAVAILABLE`, `VISION_FAILED`, `NUMERIC_DISAGREED`.
+- Invariants: a cache hit never constructs an ORT session; `describer is None` never raises; no HTTP client is constructed anywhere.
 
 **Implementation Notes**
-- Integration: `PROMPT` asks for, in order, a one-paragraph description, a verbatim transcription of all visible text, and any table rendered as Markdown. Its text is a module constant paired with `PROMPT_VERSION`; changing one without the other is a review failure.
-- Validation: `MockTransport` tests for the payload shape, the `Retry-After` path, the 401 run-wide latch, and an assertion that the rendered request's headers never reach an exception message.
-- Risks: unverified image-size limit — measure the archive's largest images during implementation; downscale before sending if a limit is found. Cost is per image and recurs only for new images.
+- Integration: no chat prompt. Pipeline version is a module constant derived from the three engine identities; changing an engine without bumping it is a review failure.
+- Validation: committed tiny ONNX fixtures or fakes for det/rec; a planted numeric disagreement drops the digits; a chart `ImageRef` with `chart_ranges` never calls the describer; a run with models absent names the missing capability; a failing transport's request counter stays zero.
+- Risks: Tesseract must be provisioned as a local binary; if it is absent, OCR is unavailable rather than running single-engine on numbers. NPU compile of `det` is out of this spec.
 
 ### Chunking
 
@@ -477,15 +473,15 @@ class StateStore:
 **Contracts**: Batch [x]
 
 ##### Batch / Job Contract
-- Trigger: `run_ingest(config: IngestConfig, tokenizer: ModelTokenizer, *, describer: VisionDescriber | None = None) -> RunReport`. The caller passes the runtime's tokenizer; the pipeline builds the describer from the discovered credential unless one is injected (tests inject a fake).
+- Trigger: `run_ingest(config: IngestConfig, tokenizer: ModelTokenizer, *, describer: VisionDescriber | None = None) -> RunReport`. The caller passes the runtime's tokenizer; the pipeline builds `LocalOcrDescriber` from configured model paths unless a describer is injected (tests inject a fake). It must not consult `OpenRouterCredential`.
 - Input / validation: `IngestConfig` validated at construction; `budget` cross-checked against the tokenizer.
 - Output / destination: `RunReport` (counts, omissions, removed chunk ids, `no_work_required`) returned in memory and rendered by `report.render`. `RunReport.records` carries **every current record** — those extracted this run for new and changed files, and those re-emitted from the state store for unchanged files (8.3) — so a consumer can rebuild from one run's output. Vectors are never stored here.
 - Idempotency & recovery: a re-run is a no-op for unchanged files by construction; a crash leaves committed files committed and uncommitted files classified as new; the vision cache survives crashes because it commits per image.
 - Isolation: each file is wrapped so that `IngestError` and any other `Exception` becomes `Omission(category=FAILED, reason=...)` and the loop continues; `KeyboardInterrupt` propagates.
 
 ### Summary-only components
-- **`IngestConfig`** — frozen dataclass; `roots: tuple[Path, ...]` (≥1), `include`/`exclude` glob tuples, `token_budget`, `prose_overlap_tokens` (default 64), `min_page_chars` (default 50), `min_image_pixels` (default 200, applied to the shorter side), `vision_model` (default `mistralai/mistral-small-3.2-24b-instruct`), `vision_base_url`, `vision_concurrency` (4), `state_path`. Validation refuses an empty `roots`, a non-positive budget, or overlap ≥ budget.
-- **`OpenRouterCredential`** — same shape as `HfCredential`: `reveal()` only; `__repr__`/`__str__` return `REDACTED`; `discover_openrouter_credential(env, start)` reads `OPENROUTER_API_KEY` from the environment or the nearest `.env` via the runtime's `find_dotenv`/`parse_dotenv`.
+- **`IngestConfig`** — frozen dataclass; `roots: tuple[Path, ...]` (≥1), `include`/`exclude` glob tuples, `token_budget`, `prose_overlap_tokens` (default 64), `min_page_chars` (default 50), `min_image_pixels` (default 200, applied to the shorter side), `ocr_det_path`, `ocr_rec_path`, `ocr_checker` (tesseract binary or `none`), `vision_concurrency` (4), `state_path`. `vision_model` / `vision_base_url` are withdrawn. Validation refuses an empty `roots`, a non-positive budget, or overlap ≥ budget.
+- **`OpenRouterCredential`** — **withdrawn 2026-09-10**. The module from task 1.5 remains until cleanup; calling it is a review failure.
 - **`Discoverer`** — resolves each root, walks with `\\?\`-prefixed paths on Windows, applies include/exclude, de-duplicates by resolved absolute path, derives `author` as the first directory component beneath the root, and emits an `Omission(ROOT_UNAVAILABLE)` per unreadable root.
 - **`Router`** — extension plus a content sniff (PDF magic, zip signature for `.xlsx`, image header via `pillow`); unmatched → `Omission(UNSUPPORTED)`.
 - **`identity`** — `params_fingerprint(config, tokenizer_id, extractor_versions)` as a SHA-256 over canonical JSON; `content_hash(path)`; `chunk_id(root_id, relative_path, kind, locator, ordinal, params)`.
@@ -495,7 +491,7 @@ class StateStore:
 
 ### Domain Model
 - **Aggregate: the source file.** A `SourceFile` and everything derived from it — its `Extracted` segments, its `ChunkRecord`s, its `file_state` row and its `chunk_registry` rows — change together and are committed together. Nothing derived from one file references another.
-- **Value objects**: `Locator` (a discriminated union: `MarkdownLocator(line_range, ordinal)`, `PageLocator(page)`, `SheetLocator(sheet, cell_range)`, `ImageFileLocator()`), `Provenance(vision_model, prompt_version)`, `ParamsFingerprint`, `ChunkKind` (`PROSE`, `TABLE`, `BLOCK`, `FORMULA`, `FIGURE`), `Omission(category, path, reason, missing_capability)`.
+- **Value objects**: `Locator` (a discriminated union: `MarkdownLocator(line_range, ordinal)`, `PageLocator(page)`, `SheetLocator(sheet, cell_range)`, `ImageFileLocator()`), `Provenance(vision_model, prompt_version)` where those fields mean recognizer id and OCR pipeline version, `ParamsFingerprint`, `ChunkKind` (`PROSE`, `TABLE`, `BLOCK`, `FORMULA`, `FIGURE`), `Omission(category, path, reason, missing_capability)` with `NUMERIC_DISAGREED` added in task 5.1.
 - **Invariants**: a `ChunkRecord` has exactly one `Locator`; a `FIGURE` record has a non-`None` `Provenance` and no other kind does; `Omission.missing_capability` is set iff `category` is `VISION_UNAVAILABLE`; `Resolved` has exactly one of `figure`/`omission`.
 
 ### Logical Data Model
@@ -544,7 +540,7 @@ CREATE TABLE vision_cache (
 ### Error Categories and Responses
 - **Input problems** (unreadable root, unsupported type, hidden sheet, image below threshold): recorded as omissions with a category; never raised.
 - **Extraction failures** (corrupt PDF, malformed workbook, undecodable image): `ExtractionError` → `Omission(FAILED)`; the file is not committed, so the next run retries it.
-- **Vision failures**: 401/403 → `VisionUnavailable` latched for the run, every remaining `ImageRef` becomes `VISION_UNAVAILABLE` with `missing_capability="vision credential rejected"`; 429 → wait and retry once; anything else → `VisionError` → `Omission(VISION_FAILED)`, file still committed with its other chunks, the image retried next run.
+- **Vision failures**: missing det/rec/checker files → `VisionUnavailable` latched for the run, remaining `ImageRef`s become `VISION_UNAVAILABLE` naming the missing capability; OCR exceptions → `VisionError` → `Omission(VISION_FAILED)`, file still committed with its other chunks; numeric disagreement that leaves no text → `Omission(NUMERIC_DISAGREED)`.
 - **State failures** (locked database, schema mismatch): `StateError` aborts the run before any file is processed; this is the one fatal category, because continuing would produce records nothing can classify later.
 
 ### Monitoring
@@ -556,16 +552,16 @@ The runtime's standing lesson applies: every fixture must be able to tell right 
 
 - **Unit — extraction**: a Markdown fixture with front matter, an HTML block, a heading hierarchy, a GFM table, and images with and without alt text, asserting heading paths, `TableSegment` emission and `ImageRef` line anchors (3.1, 3.2, 3.5). An Excel fixture with two blank-row-separated blocks, **a merged label spanning three rows**, a formula with a cached value and one without, a hidden sheet, one chart and one image — asserting block boundaries (a naive all-`None` rule must fail), `FormulaSegment`s, the `VALUE_UNAVAILABLE` omission, the hidden-sheet omission, and chart source ranges read without OCR (4.1–4.8). A PDF fixture with one text page and one textless page, asserting the threshold branch on both sides (2.2, 2.3).
 - **Unit — chunking**: budget never exceeded when measured **with the title attached** (a fixture whose content alone fits but content-plus-title does not); overlap present on prose and absent on every other kind, with `OVERLAP_POLICY` covering every `ChunkKind`; a block over budget split with label and header repeated in every piece (4.3, 6.2–6.6).
-- **Unit — vision seam**: a fake describer proving the gate order threshold → cache → credential → describe; `OpenRouterDescriber` over `httpx.MockTransport` for payload shape, `Retry-After` handling, the 401 run-wide latch, and that no exception message or `repr` contains the key (5.x, 10.4).
+- **Unit — vision seam**: a fake describer proving the gate order threshold → chart_ranges → cache → models present → describe; `LocalOcrDescriber` over committed ONNX fixtures; a planted numeric disagreement drops the digits; a chart `ImageRef` with ranges never calls OCR (5.x, 5.9, 5.10).
 - **Unit — identity and state**: `chunk_id` unchanged when an unrelated file changes and identical across two runs (7.4, 7.5); `params_fingerprint` changes when any listed parameter changes and only then (8.2, 8.5); `deleted_since` returns exactly the files absent this run with their chunk ids (8.4).
-- **Integration — pipeline**: a temp root with mixed files where one is corrupt — the run completes, the corrupt file is a `FAILED` omission, every other file is committed (9.1, 9.5); a second identical run extracts nothing, issues no describer call, and reports `no_work_required` (8.3, 8.6); the same run with no credential reports every `ImageRef` as `VISION_UNAVAILABLE` naming the capability, and the run has no network access at all (5.2, 9.4, 10.2).
+- **Integration — pipeline**: a temp root with mixed files where one is corrupt — the run completes, the corrupt file is a `FAILED` omission, every other file is committed (9.1, 9.5); a second identical run extracts nothing, runs no OCR, and reports `no_work_required` (8.3, 8.6); the same run with OCR models absent reports every `ImageRef` as `VISION_UNAVAILABLE` naming the capability, and a failing transport's request counter stays zero (5.2, 9.4, 10.2, 10.3).
 - **Contract — requirement 6.7**: for a sample drawn from the runtime's committed corpus fixture (`tests/fixtures/benchmark-corpus/chunks.jsonl`), `tokenizer.count_tokens(DocumentText(text, title), DOCUMENT) <= budget` implies the index is absent from `encode_documents([...]).truncated_indices`, and `> budget` implies it is present — both directions. It runs **unconditionally** in the standing suite against a real, ungated tokenizer loaded from committed files (`fixtures/tokenizer/`), and it must fail loudly rather than skip if that fixture is missing; a second, opt-in run targets the gated default model. Every real tokenizer in the runtime's own suite sits behind a network-gated skip, which is exactly the coverage hole this test exists to close.
-- **Guard**: `tests/ingest/test_package_baseline.py` walks every module and asserts the dependency direction, that only `vision.py` imports `httpx`, and that `extract/*` never imports `vision` or `state` (10.3).
+- **Guard**: `tests/ingest/test_package_baseline.py` walks every module and asserts the dependency direction, that `httpx` is imported nowhere under `npu_rag.ingest`, and that `extract/*` never imports `vision` or `state` (10.3).
 
 ## Security Considerations
-- The only secret is the OpenRouter key. It is read from the environment or `.env`, held in `OpenRouterCredential`, revealed at one line inside request construction, and never enters a log, report, record, `repr`, or chained traceback (10.4). A test greps the rendered exception for the key's value.
-- Content leaves the machine only through `vision.py`, only when a credential is configured, and only as images. This is the owner's accepted trade, recorded in the brief; the layer guard makes any second exit path a test failure rather than a code-review judgement.
-- The archive is opened read-only; the state file is the only thing written, at a configurable path outside the roots.
+- There is no hosted-vision secret. `OpenRouterCredential` is withdrawn and must not be read. Task 1.5's module remains on disk until a cleanup task deletes it; consulting it is a review failure.
+- Content does not leave the machine. The layer guard makes any `httpx` import under `npu_rag.ingest` a test failure.
+- The archive is opened read-only; the state file is the only thing written, at a configurable path outside the roots. OCR model files are read-only inputs.
 
 ## Performance & Scalability
 - First run over the current archive: ~1,343 text files extract locally in seconds to minutes; up to 3,837 images go through the vision seam at bounded concurrency, dominated by API latency — expect tens of minutes and a few dollars, once. Subsequent runs cost one hash per file plus work for new files only.

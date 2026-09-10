@@ -5,7 +5,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - **Never run a bare `uv sync`.** It drops the `npu` dependency group and de-provisions the NPU. Install through `uv run python -m tools.provision_npu`, which performs the group-aware sync and re-applies the vendor DLL relocation.
 - **PowerShell and Windows core tools only** — no Git Bash, msys or cygwin.
 - **The standing lesson applies** (`npu-embedding-runtime/tasks.md`, rules 1–10): fixtures must be able to tell right from wrong, a guard is proved by planting its negation, live-only coverage is no coverage, and prose is pinned by claim, not keyword.
-- **Only image-to-text leaves the machine.** The layer guard makes any second exit path a test failure; it is a decision, not a default.
+- **Nothing leaves the machine.** The layer guard makes any `httpx` import under ingest a test failure. OpenRouter is withdrawn (2026-09-10).
 
 - [x] 1. Foundation: package, dependencies, shared contracts, guard, offline tokenizer
 - [x] 1.1 Establish the ingest package and declare its dependencies
@@ -105,18 +105,19 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Boundary: ImageExtractor_
 
 - [ ] 5. The vision seam
-- [ ] 5.1 Image resolution with gates, cache, and bounded fan-out
-  - Define the prompt text and its version as paired module constants here — changing one without the other is a review failure — so identity and the cache key can be handed the version as a value
-  - Resolve each image reference in the order threshold, cache, credential, describe, store; produce a figure segment carrying the model id and prompt version, or an omission whose category says which gate closed and, for a missing credential, names the capability; a null describer never raises
-  - A batch entry point owns the bounded worker pool and the per-image timeout over a file's cache misses, preserving order; the describer is only ever asked for one image at a time
-  - Observable: with a fake describer, a below-threshold image never reaches it; a cache hit never reaches it; without a credential every above-threshold image becomes a vision-unavailable omission; the count of below-threshold images is reported; the fake records its maximum in-flight count and it never exceeds the configured concurrency
-  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 9.4_
+- [ ] 5.1 Image resolution with gates, cache, chart-range short-circuit, and bounded fan-out
+  - Define `PIPELINE_VERSION` as a module constant derived from detector, recognizer and digit-checker identities — changing an engine without bumping it is a review failure — so identity and the cache key can be handed the version as a value
+  - Extend `OmissionCategory` with `NUMERIC_DISAGREED` in `types.py` (the vision task is when that category becomes observable)
+  - Resolve each image reference in the order threshold, chart_ranges, cache, models present, describe, store; produce a figure segment carrying the recognizer id and pipeline version, or an omission whose category says which gate closed; a null describer never raises; an `ImageRef` with `chart_ranges` becomes figure text from those ranges and never reaches the describer
+  - A batch entry point owns the bounded worker pool over a file's cache misses, preserving order; the describer is only ever asked for one image at a time
+  - Observable: with a fake describer, a below-threshold image never reaches it; a cache hit never reaches it; an ImageRef with chart_ranges never reaches it; without model files every remaining above-threshold image becomes a vision-unavailable omission naming the missing capability; the fake's in-flight count never exceeds configured concurrency
+  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 5.10, 9.4_
   - _Depends: 2.3, 4.7_
-- [ ] 5.2 OpenRouter describer
-  - The single outbound call for one image: a text part carrying the versioned prompt then one image part as a base64 data URL; temperature zero without assuming determinism; honour Retry-After on 429 and retry once; treat 401 or 403 as vision unavailable for the rest of the run; wrap transport errors so no chained traceback carries headers; reveal the credential at exactly one line
-  - Observable: against a mock transport, the request body matches the documented shape; a 429 with Retry-After is retried after the wait; a 401 latches; the rendered text of every raised error is free of the secret
-  - _Requirements: 5.6, 5.7, 10.2, 10.3, 10.4, 10.5_
-  - _Depends: 1.5_
+- [ ] 5.2 Local OCR describer with a second vote on digits
+  - Load InfiniFlow DeepDoc `det.onnx` and `rec.onnx` through ONNX Runtime CPU; run Tesseract 5 LSTM on the same crops as the digit checker; emit concatenated recognised text; keep a numeric token only when both engines agree after normalisation; drop a number that only one engine produced; if that emptying leaves no text, raise a path that becomes `NUMERIC_DISAGREED`; missing model files raise `VisionUnavailable` for the rest of the run; never import `httpx`; never open a socket
+  - Observable: a fixture chart image whose primary OCR reads `12.4` and whose checker reads `12.4` keeps `12.4`; the same fixture with the checker reading `12.9` drops the number; a planted HTTP transport records zero requests; absent `det.onnx` names the missing capability
+  - _Requirements: 5.6, 5.7, 5.9, 10.2, 10.3, 10.4, 10.5_
+  - _Depends: 5.1_
 
 - [ ] 6. Chunking
 - [ ] 6.1 Measurement, policy, and record assembly
@@ -150,8 +151,8 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Run over a temporary root twice: the second run extracts nothing, issues no describer call, reports no work required, and its report still carries every record from the store; delete a file and its chunk ids are reported removed; change one parameter and affected files are reclassified changed; add one file and only it is processed
   - Observable: across the four scenarios the extractor and describer fakes record exactly the calls the scenario permits and no others, and each report's counts and removed ids match the literal expected values
   - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
-- [ ] 8.2 (P) Offline and absent-credential behaviour
-  - With no credential, every image reference is a vision-unavailable omission naming the capability and the run completes; install a transport that fails on any request and prove none is made — the proof is about requests issued, not the import set, so the runtime's transitive Hub import cannot fail it; assert no provider or session module from the runtime is imported
+- [ ] 8.2 (P) Offline and absent-model behaviour
+  - With OCR model files absent, every image reference is a vision-unavailable omission naming the capability and the run completes; install a transport that fails on any request and prove none is made — the proof is about requests issued, not the import set, so the runtime's transitive Hub import cannot fail it; assert no provider or session module from the runtime is imported and that `OpenRouterCredential` is not consulted
   - Observable: the failing transport's request counter reads zero after a full run, the report lists every image by path under vision-unavailable with the capability named, and the loaded-module set contains no runtime provider or session module
   - _Requirements: 5.2, 9.4, 10.1, 10.2, 10.3, 10.5_
   - _Boundary: offline validation_
@@ -174,7 +175,8 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.2: ChunkRecord JSON uses a locator `type` discriminator (`markdown`/`page`/`sheet`/`image_file`); VisionUnavailable is a sibling of VisionError so `except` categories do not swallow each other.
 - 1.3: LAYER_ORDER is seeded complete in tests/ingest/test_package_baseline.py; later modules must not edit the table. extract→state is leftward by rank, so the name-based extract ↛ state/vision assertion is load-bearing. Only vision.py may import httpx.
 - 1.4: `token_budget` and `roots` have no defaults (1.1/6.1). `vision_base_url` defaults to `https://openrouter.ai/api/v1`. `PROMPT_VERSION` is not on IngestConfig.
-- 1.5: OpenRouterCredential imports `REDACTED`/`find_dotenv`/`parse_dotenv` from `npu_rag.embedding.models.acquire`; env key is `OPENROUTER_API_KEY`. Absence is `None`.
+- 1.5: OpenRouterCredential was implemented, then **withdrawn 2026-09-10**. Do not consult it. Cleanup (delete credential.py and its tests) is a later task, not 5.x.
+- 2026-09-10: vision path reversed from OpenRouter VLM to InfiniFlow det+rec + Tesseract digit checker. Hosted calls are out. `httpx` must not be imported under ingest. Native Excel `chart_ranges` skip OCR.
 - 1.6: session fixture `runtime_tokenizer` in tests/ingest/conftest.py loads `gte-modernbert-base` from tests/ingest/fixtures/tokenizer/ with `local_files_only=True`. Missing files `pytest.fail`, never skip. Limit is compiled 512.
 - 2.1: `params_fingerprint(config, tokenizer_id, extractor_versions, prompt_version)` — prompt version is an argument, not an import of vision. `chunk_id` reuses `types._locator_to_dict` so the locator discriminator stays one vocabulary.
 - 2.2: `classify` does not stamp `last_seen_run`. Task 7.2 must call `commit_file` for unchanged files with retained records, or they will appear in `deleted_since`. `vision_cache` table is deferred to 2.3.
