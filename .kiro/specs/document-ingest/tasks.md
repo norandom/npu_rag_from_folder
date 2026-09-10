@@ -55,12 +55,12 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: a stored description is returned for the same key from a second thread and is absent for any key differing in one component
   - _Requirements: 5.4, 5.5_
 
-- [ ] 3. Discovery and routing
+- [x] 3. Discovery and routing
 - [x] 3.1 Discoverer
   - Walk every configured root recursively with long-path support on Windows, apply include and exclude rules, de-duplicate files reached through overlapping roots by resolved path, derive the author from the first directory beneath the root, and record an unreadable root as an omission while continuing
   - Observable: two overlapping roots yield one source file per file; a non-ASCII path longer than the traditional limit is enumerated; a missing root produces one omission and the others are still walked
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 7.2_
-- [ ] 3.2 (P) Router
+- [x] 3.2 (P) Router
   - Select the extraction path from the extension together with a content sniff — PDF magic bytes, the zip signature for workbooks, an image header — and return a path token only; the token-to-adapter table belongs to the pipeline; record anything unmatched as an unsupported omission
   - Observable: a file with a misleading extension is routed by its content, and an unknown type appears in the report with its path
   - _Requirements: 2.1, 2.4_
@@ -180,3 +180,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 2.2: `classify` does not stamp `last_seen_run`. Task 7.2 must call `commit_file` for unchanged files with retained records, or they will appear in `deleted_since`. `vision_cache` table is deferred to 2.3.
 - 2.3: vision_cache lives in the same SQLite file; lookups/stores take the StateStore RLock so worker threads share one connection.
 - 3.1: on Windows, `SourceFile.path` is always `\\?\`-prefixed (including short paths). Extractors must open that form. Include/exclude: `**` is recursive, `*` is one path segment; exclude wins. Author is empty when the file sits directly in the root. First overlapping root wins.
+- 3.2: sniff wins over a misleading extension. After a miss, fall back to known extensions (`.pdf`/`.xlsx`/raster/`.md`/`.txt`) so a corrupt file still reaches its extractor (8.4 FAILED, not UNSUPPORTED). True unknown types are `Omission(UNSUPPORTED)` with the path. Tokens only; the adapter table is pipeline's.
