@@ -29,7 +29,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: an empty root list, a non-positive budget, or an overlap at or above the budget is refused at construction
   - _Requirements: 1.1, 1.3, 2.5, 5.3, 5.7, 6.1, 6.4_
   - _Boundary: IngestConfig_
-- [ ] 1.5 (P) A vision credential that cannot render itself
+- [x] 1.5 (P) A vision credential that cannot render itself
   - Mirror the runtime's credential object, importing its dotenv helpers and redaction marker from the runtime's acquisition module by submodule path; that module imports the Hub client at import time and issues no request, which is accepted; the secret is reachable only through one reveal method; string and repr forms and any traceback yield the redaction marker; discovery reads the environment variable or the nearest dotenv file
   - Observable: a test that renders the credential every ordinary way and searches the output for the secret finds nothing
   - _Requirements: 10.4, 10.5_
@@ -174,3 +174,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 1.2: ChunkRecord JSON uses a locator `type` discriminator (`markdown`/`page`/`sheet`/`image_file`); VisionUnavailable is a sibling of VisionError so `except` categories do not swallow each other.
 - 1.3: LAYER_ORDER is seeded complete in tests/ingest/test_package_baseline.py; later modules must not edit the table. extract→state is leftward by rank, so the name-based extract ↛ state/vision assertion is load-bearing. Only vision.py may import httpx.
 - 1.4: `token_budget` and `roots` have no defaults (1.1/6.1). `vision_base_url` defaults to `https://openrouter.ai/api/v1`. `PROMPT_VERSION` is not on IngestConfig.
+- 1.5: OpenRouterCredential imports `REDACTED`/`find_dotenv`/`parse_dotenv` from `npu_rag.embedding.models.acquire`; env key is `OPENROUTER_API_KEY`. Absence is `None`.
