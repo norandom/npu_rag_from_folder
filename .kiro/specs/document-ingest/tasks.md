@@ -125,7 +125,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: a fixture whose content alone fits the budget but whose content plus title does not is reported as over budget; a test fails if a chunk kind exists without an overlap policy entry
   - _Requirements: 6.1, 6.2, 6.5, 7.1_
   - _Depends: 1.6, 2.1_
-- [ ] 6.2 Prose accumulation, heading-first splitting, and overlap
+- [x] 6.2 Prose accumulation, heading-first splitting, and overlap
   - Accumulate paragraphs up to the budget, splitting at a heading-path change first; apply the configured overlap between consecutive prose chunks only; tables and figures pass through as single non-overlapping chunks
   - Observable: a fixture with two headings splits at the heading before the budget is reached; consecutive prose chunks share exactly the configured overlap; a table chunk shares nothing with its neighbours; no emitted chunk exceeds the tokenizer's limit
   - _Requirements: 6.3, 6.4, 6.6_

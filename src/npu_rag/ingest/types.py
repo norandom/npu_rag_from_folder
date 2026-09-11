@@ -225,7 +225,7 @@ class Extracted:
     """One file's extraction result: title, reading-order segments, omissions."""
 
     title: str | None
-    segments: tuple[Segment, ...]
+    segments: tuple[Segment | FigureSegment, ...]
     omissions: tuple[Omission, ...]
 
 
