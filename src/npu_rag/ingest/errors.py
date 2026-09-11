@@ -76,13 +76,24 @@ class VisionError(IngestError):
 
 
 class VisionUnavailable(IngestError):
-    """The vision credential was rejected (401/403); latched for the rest of the run.
+    """A required vision model or capability was absent; latched for the rest of the run.
 
     A sibling of ``VisionError``, not a subclass: catching one must not
     swallow the other, because they map to different omission categories.
     """
 
     default_stage: ClassVar[str] = "vision_unavailable"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str | None = None,
+        path: Path | None = None,
+        missing_capability: str | None = None,
+    ) -> None:
+        super().__init__(message, stage=stage, path=path)
+        self.missing_capability = missing_capability or message
 
 
 class StateError(IngestError):

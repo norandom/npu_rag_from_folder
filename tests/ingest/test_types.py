@@ -106,6 +106,7 @@ def test_omission_category_is_exactly_the_set_named_in_the_design() -> None:
         "vision_unavailable",
         "below_threshold",
         "vision_failed",
+        "numeric_disagreed",
         "failed",
     }
 
@@ -125,6 +126,7 @@ def test_omission_category_is_exactly_the_set_named_in_the_design() -> None:
         (OmissionCategory.VISION_UNAVAILABLE, "vision_unavailable"),
         (OmissionCategory.BELOW_THRESHOLD, "below_threshold"),
         (OmissionCategory.VISION_FAILED, "vision_failed"),
+        (OmissionCategory.NUMERIC_DISAGREED, "numeric_disagreed"),
         (OmissionCategory.FAILED, "failed"),
     ],
 )
@@ -387,6 +389,7 @@ def test_vision_unavailable_omission_with_a_blank_capability_is_refused() -> Non
         OmissionCategory.HIDDEN_SHEET,
         OmissionCategory.BELOW_THRESHOLD,
         OmissionCategory.VISION_FAILED,
+        OmissionCategory.NUMERIC_DISAGREED,
         OmissionCategory.FAILED,
     ],
 )

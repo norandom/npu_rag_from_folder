@@ -62,6 +62,7 @@ class OmissionCategory(StrEnum):
     VISION_UNAVAILABLE = "vision_unavailable"
     BELOW_THRESHOLD = "below_threshold"
     VISION_FAILED = "vision_failed"
+    NUMERIC_DISAGREED = "numeric_disagreed"
     FAILED = "failed"
 
 

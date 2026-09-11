@@ -105,7 +105,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Boundary: ImageExtractor_
 
 - [ ] 5. The vision seam
-- [ ] 5.1 Image resolution with gates, cache, chart-range short-circuit, and bounded fan-out
+- [x] 5.1 Image resolution with gates, cache, chart-range short-circuit, and bounded fan-out
   - Define `PIPELINE_VERSION` as a module constant derived from detector, recognizer and digit-checker identities — changing an engine without bumping it is a review failure — so identity and the cache key can be handed the version as a value
   - Extend `OmissionCategory` with `NUMERIC_DISAGREED` in `types.py` (the vision task is when that category becomes observable)
   - Resolve each image reference in the order threshold, chart_ranges, cache, models present, describe, store; produce a figure segment carrying the recognizer id and pipeline version, or an omission whose category says which gate closed; a null describer never raises; an `ImageRef` with `chart_ranges` becomes figure text from those ranges and never reaches the describer
@@ -190,3 +190,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 4.5: two `load_workbook` calls (`data_only=True` then `False`). B6 cached 150 in the block; B12/C6/D6 are VALUE_UNAVAILABLE because only B6 has a cached `<v>`.
 - 4.6: `anchored_objects(ws)` is the only `_images`/`_charts` access. Chart ImageRef bytes are a size-matched blank PNG because openpyxl cannot rasterize; series ranges on `chart_ranges` are the 4.7 payload. Vision (5.1) should not spend a request describing that blank PNG when ranges are present.
 - 4.7: `ImageExtractor` always emits the ImageRef. Size gate is 5.1. Fixtures: `chart.png` 256×201, `icon.jpg` 16×16.
+- 5.1: `PIPELINE_VERSION` derived from detector, recognizer, and digit-checker IDs. Gate order in `resolve`/`resolve_all`: threshold -> chart_ranges -> cache -> models present -> describe -> cache store. Concurrency bounded by `vision_concurrency` via `ThreadPoolExecutor`. `NUMERIC_DISAGREED` added to `OmissionCategory`.
