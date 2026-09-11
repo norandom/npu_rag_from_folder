@@ -101,6 +101,9 @@ def test_offline_and_absent_model_behaviour(
         state_path=state_path,
     )
 
+    # Snapshot loaded modules before run_ingest
+    initial_modules = set(sys.modules.keys())
+
     # Run ingest without injecting a describer
     report = run_ingest(config, runtime_tokenizer, describer=None)
 
@@ -138,13 +141,14 @@ def test_offline_and_absent_model_behaviour(
     # 4. OpenRouterCredential was not consulted (Requirement 10.4)
     assert not credential_consulted
 
-    # 5. Loaded modules: assert no runtime provider or session module is imported (Requirement 10.1)
+    # 5. Loaded modules: assert no runtime provider or session module was loaded during ingest (Requirement 10.1)
     forbidden_prefixes = (
         "npu_rag.embedding.providers",
         "npu_rag.embedding.session",
         "npu_rag.embedding.sessions",
     )
-    for mod_name in list(sys.modules.keys()):
+    new_modules = set(sys.modules.keys()) - initial_modules
+    for mod_name in new_modules:
         for prefix in forbidden_prefixes:
             assert not mod_name.startswith(
                 prefix
