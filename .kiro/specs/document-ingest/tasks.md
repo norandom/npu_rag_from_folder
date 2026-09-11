@@ -119,7 +119,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 5.6, 5.7, 5.9, 10.2, 10.3, 10.4, 10.5_
   - _Depends: 5.1_
 
-- [ ] 6. Chunking
+- [x] 6. Chunking
 - [x] 6.1 Measurement, policy, and record assembly
   - Measure every candidate with the document title attached under the document convention; refuse construction if the budget disagrees with the tokenizer's limit; declare the overlap policy for every chunk kind; assemble records with chunk ids and token counts
   - Observable: a fixture whose content alone fits the budget but whose content plus title does not is reported as over budget; a test fails if a chunk kind exists without an overlap policy entry
@@ -129,7 +129,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Accumulate paragraphs up to the budget, splitting at a heading-path change first; apply the configured overlap between consecutive prose chunks only; tables and figures pass through as single non-overlapping chunks
   - Observable: a fixture with two headings splits at the heading before the budget is reached; consecutive prose chunks share exactly the configured overlap; a table chunk shares nothing with its neighbours; no emitted chunk exceeds the tokenizer's limit
   - _Requirements: 6.3, 6.4, 6.6_
-- [ ] 6.3 Block splitting and indivisible-unit truncation
+- [x] 6.3 Block splitting and indivisible-unit truncation
   - Split an oversize block by rows repeating its label and header row in every piece; truncate a single indivisible unit at a token boundary and mark the chunk truncated rather than dropping content
   - Observable: an oversize block fixture yields pieces that each begin with the label and header and together cover every row once; an oversize single paragraph yields one chunk marked truncated that fits the limit
   - _Requirements: 4.2, 4.3, 6.3_

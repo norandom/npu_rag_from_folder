@@ -205,6 +205,62 @@ class Chunker:
             )
         )
 
+    def split_block(
+        self,
+        segment: BlockSegment,
+        title: str | None,
+    ) -> list[tuple[str, bool]]:
+        """Split an oversize block by rows, repeating label and header in every piece (4.3).
+
+        Returns a list of (piece_text, truncated) pairs.
+        Each piece begins with label and header_row, and together they cover every row once.
+        """
+        full_text = _format_block(
+            segment.label, segment.header_row, segment.rows
+        )
+        if self.measure(full_text, title) <= self._budget:
+            return [(full_text, False)]
+
+        pieces: list[tuple[str, bool]] = []
+        current_rows: list[tuple[str, ...]] = []
+
+        for row in segment.rows:
+            candidate_rows = current_rows + [row]
+            candidate_text = _format_block(
+                segment.label, segment.header_row, candidate_rows
+            )
+            if self.measure(candidate_text, title) <= self._budget:
+                current_rows.append(row)
+            else:
+                if current_rows:
+                    piece_text = _format_block(
+                        segment.label, segment.header_row, current_rows
+                    )
+                    pieces.append((piece_text, False))
+                    current_rows = []
+
+                # Test if single row fits with label and header
+                single_row_text = _format_block(
+                    segment.label, segment.header_row, [row]
+                )
+                if self.measure(single_row_text, title) <= self._budget:
+                    current_rows = [row]
+                else:
+                    # Single row exceeds budget: truncate indivisible unit
+                    piece_text = self._truncate_to_budget(
+                        single_row_text, title
+                    )
+                    pieces.append((piece_text, True))
+                    current_rows = []
+
+        if current_rows:
+            piece_text = _format_block(
+                segment.label, segment.header_row, current_rows
+            )
+            pieces.append((piece_text, False))
+
+        return pieces
+
     def chunk(
         self,
         source: SourceFile,
@@ -406,28 +462,23 @@ class Chunker:
                     ordinal += 1
 
                 elif isinstance(segment, BlockSegment):
-                    block_text = _format_block(
-                        segment.label, segment.header_row, segment.rows
+                    block_pieces = self.split_block(
+                        segment, extracted.title
                     )
-                    truncated = False
-                    if self.measure(block_text, extracted.title) > self._budget:
-                        block_text = self._truncate_to_budget(
-                            block_text, extracted.title
+                    for piece_text, piece_truncated in block_pieces:
+                        records.append(
+                            self.assemble_record(
+                                source=source,
+                                title=extracted.title,
+                                kind=ChunkKind.BLOCK,
+                                text=piece_text,
+                                locator=segment.locator,
+                                ordinal=ordinal,
+                                truncated=piece_truncated,
+                                params=params,
+                            )
                         )
-                        truncated = True
-                    records.append(
-                        self.assemble_record(
-                            source=source,
-                            title=extracted.title,
-                            kind=ChunkKind.BLOCK,
-                            text=block_text,
-                            locator=segment.locator,
-                            ordinal=ordinal,
-                            truncated=truncated,
-                            params=params,
-                        )
-                    )
-                    ordinal += 1
+                        ordinal += 1
 
         flush_prose(allow_overlap=False)
 

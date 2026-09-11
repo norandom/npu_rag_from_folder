@@ -338,3 +338,125 @@ def test_no_emitted_chunk_exceeds_tokenizer_limit(
         assert chunker.measure(record.text, record.title) <= limit
         assert chunker.exceeds_budget(record.text, record.title) is False
 
+
+# --------------------------------------------------------------------------
+# Task 6.3: Block splitting and indivisible-unit truncation
+# --------------------------------------------------------------------------
+
+
+def test_oversize_block_splits_by_rows_repeating_label_and_header(
+    runtime_tokenizer: ModelTokenizer,
+) -> None:
+    """Requirements 4.2, 4.3 / Observable 6.3: Oversize block splits repeating label and header."""
+    limit = runtime_tokenizer.max_input_tokens  # 512
+    chunker = Chunker(runtime_tokenizer, budget=limit, prose_overlap_tokens=32)
+
+    label = "Operating Expenses"
+    header_row = ("Line Item", "FY22", "FY23", "FY24", "FY25")
+    # 25 rows with substantial text; total will exceed 512 tokens
+    rows = tuple(
+        (
+            f"Detailed Expense Item #{i:02d} for regional infrastructure maintenance",
+            f"${100 + i}k",
+            f"${110 + i}k",
+            f"${120 + i}k",
+            f"${130 + i}k",
+        )
+        for i in range(25)
+    )
+    locator = SheetLocator(sheet="Income", cell_range="A1:E27")
+    block = BlockSegment(
+        label=label,
+        header_row=header_row,
+        rows=rows,
+        locator=locator,
+    )
+
+    extracted = Extracted(title="Annual Model", segments=(block,), omissions=())
+    records = chunker.chunk(SOURCE, extracted, params=PARAMS)
+
+    # Must produce multiple chunks
+    assert len(records) >= 2
+
+    # Every piece must begin with label and header, have kind BLOCK, and not exceed budget
+    expected_header = f"{label}\n{' | '.join(header_row)}"
+    recovered_rows: list[tuple[str, ...]] = []
+
+    for r in records:
+        assert r.kind is ChunkKind.BLOCK
+        assert r.text.startswith(expected_header)
+        assert r.locator == locator
+        assert chunker.measure(r.text, r.title) <= limit
+        assert r.truncated is False
+
+        # Parse data rows out of this piece
+        lines = r.text.splitlines()
+        assert lines[0] == label
+        assert lines[1] == " | ".join(header_row)
+        for data_line in lines[2:]:
+            cols = tuple(data_line.split(" | "))
+            recovered_rows.append(cols)
+
+    # Together, the pieces must cover every row once in original order
+    assert len(recovered_rows) == len(rows)
+    assert tuple(recovered_rows) == rows
+
+
+def test_oversize_single_paragraph_yields_one_chunk_marked_truncated(
+    runtime_tokenizer: ModelTokenizer,
+) -> None:
+    """Requirement 6.3 / Observable 6.3: Oversize single paragraph yields one chunk marked truncated."""
+    limit = runtime_tokenizer.max_input_tokens  # 512
+    chunker = Chunker(runtime_tokenizer, budget=limit, prose_overlap_tokens=32)
+
+    # Single paragraph with > 700 tokens
+    big_paragraph = (
+        "This is an extraordinarily verbose and lengthy paragraph designed specifically "
+        "to test indivisible unit truncation against the compiled sequence budget of the embedding model. "
+    ) * 35
+
+    p = ProseSegment(
+        text=big_paragraph.strip(),
+        locator=MarkdownLocator(line_range=(1, 50), ordinal=0),
+    )
+
+    extracted = Extracted(title="OversizeDoc", segments=(p,), omissions=())
+    records = chunker.chunk(SOURCE, extracted, params=PARAMS)
+
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.kind is ChunkKind.PROSE
+    assert rec.truncated is True
+    assert chunker.measure(rec.text, rec.title) <= limit
+    assert chunker.exceeds_budget(rec.text, rec.title) is False
+    assert len(rec.text) < len(big_paragraph)
+
+
+def test_oversize_single_block_row_is_truncated_at_token_boundary(
+    runtime_tokenizer: ModelTokenizer,
+) -> None:
+    """Requirement 6.3 / Observable 6.3: Oversize single block row is truncated."""
+    limit = runtime_tokenizer.max_input_tokens
+    chunker = Chunker(runtime_tokenizer, budget=limit, prose_overlap_tokens=32)
+
+    huge_row = (
+        "A " * 600,
+        "Val1",
+        "Val2",
+    )
+    block = BlockSegment(
+        label="Huge Block",
+        header_row=("ColA", "ColB", "ColC"),
+        rows=(huge_row,),
+        locator=SheetLocator(sheet="S1", cell_range="A1:C2"),
+    )
+
+    extracted = Extracted(title="Model", segments=(block,), omissions=())
+    records = chunker.chunk(SOURCE, extracted, params=PARAMS)
+
+    assert len(records) == 1
+    assert records[0].kind is ChunkKind.BLOCK
+    assert records[0].truncated is True
+    assert chunker.measure(records[0].text, records[0].title) <= limit
+
+
