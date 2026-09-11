@@ -216,6 +216,27 @@ class StateStore:
                 raise StateError(str(exc), path=self._path) from exc
             return tuple(result)
 
+    def purge_deleted(self, run_id: str) -> None:
+        """Remove file_state and chunk_registry rows whose last_seen_run is not run_id."""
+        with self._lock:
+            try:
+                with self._connection:
+                    self._connection.execute(
+                        """
+                        DELETE FROM chunk_registry
+                        WHERE (root_id, relative_path) IN (
+                            SELECT root_id, relative_path FROM file_state WHERE last_seen_run != ?
+                        )
+                        """,
+                        (run_id,),
+                    )
+                    self._connection.execute(
+                        "DELETE FROM file_state WHERE last_seen_run != ?",
+                        (run_id,),
+                    )
+            except sqlite3.Error as exc:
+                raise StateError(str(exc), path=self._path) from exc
+
     def cached_description(
         self, image_sha256: str, model_id: str, prompt_version: str
     ) -> str | None:

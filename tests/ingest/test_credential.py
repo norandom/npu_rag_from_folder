@@ -214,5 +214,5 @@ def test_credential_module_imports_runtime_helpers_and_does_not_copy_them() -> N
 def test_credential_is_not_exported_from_the_package() -> None:
     import npu_rag.ingest as ingest
 
-    assert ingest.__all__ == []
+    assert "OpenRouterCredential" not in ingest.__all__
     assert not hasattr(ingest, "OpenRouterCredential")

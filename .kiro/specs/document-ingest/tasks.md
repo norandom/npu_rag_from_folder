@@ -134,13 +134,13 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: an oversize block fixture yields pieces that each begin with the label and header and together cover every row once; an oversize single paragraph yields one chunk marked truncated that fits the limit
   - _Requirements: 4.2, 4.3, 6.3_
 
-- [ ] 7. Orchestration and reporting
+- [x] 7. Orchestration and reporting
 - [x] 7.1 (P) Run report
   - Counts by file status and by omission category; every omission by path and reason with the missing capability named where one applies; removed chunk ids; the no-work-required flag; vision requests issued versus served from cache; a human-readable rendering
   - Observable: a rendered report for a mixed run lists every skipped and failed file with its reason and states the totals
   - _Requirements: 1.4, 2.4, 5.2, 5.3, 8.4, 8.6, 9.2, 9.3, 9.4_
   - _Boundary: report_
-- [ ] 7.2 Pipeline and public surface
+- [x] 7.2 Pipeline and public surface
   - The single entry point taking the configuration, the runtime tokenizer and an optional describer; own the path-token-to-adapter table; classify before extract; re-emit an unchanged file's records from the store; run route, extract, resolve, chunk and commit for new and changed files; convert any per-file error into a failed omission and continue, letting keyboard interrupt through; abort before any file on a state-store failure; compute the deleted set at the end; return the report carrying every current record; export the public contracts from the package root
   - Observable: a root with one corrupt file completes with that file as a failed omission and every other file committed; a run where every file fails still returns a report; the report's records include the unchanged files' retained records
   - _Requirements: 8.3, 8.6, 9.1, 9.5, 10.1_

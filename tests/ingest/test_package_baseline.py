@@ -64,9 +64,13 @@ def test_ingest_package_is_importable() -> None:
     assert module.__name__ == "npu_rag.ingest"
 
 
-def test_ingest_public_surface_is_empty() -> None:
+def test_ingest_public_surface_exports_public_contracts() -> None:
     module = importlib.import_module("npu_rag.ingest")
-    assert module.__all__ == []
+    assert "run_ingest" in module.__all__
+    assert "IngestConfig" in module.__all__
+    assert "RunReport" in module.__all__
+    assert "ChunkRecord" in module.__all__
+    assert "ChunkKind" in module.__all__
 
 
 def test_ingest_third_party_dependencies_are_declared_in_the_default_set() -> None:
