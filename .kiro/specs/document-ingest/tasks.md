@@ -135,7 +135,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 4.2, 4.3, 6.3_
 
 - [ ] 7. Orchestration and reporting
-- [ ] 7.1 (P) Run report
+- [x] 7.1 (P) Run report
   - Counts by file status and by omission category; every omission by path and reason with the missing capability named where one applies; removed chunk ids; the no-work-required flag; vision requests issued versus served from cache; a human-readable rendering
   - Observable: a rendered report for a mixed run lists every skipped and failed file with its reason and states the totals
   - _Requirements: 1.4, 2.4, 5.2, 5.3, 8.4, 8.6, 9.2, 9.3, 9.4_

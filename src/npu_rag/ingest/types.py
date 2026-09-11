@@ -391,6 +391,26 @@ class RunReport:
     vision_cache_hits: int
     records: tuple[ChunkRecord, ...]
 
+    @property
+    def omission_counts(self) -> dict[OmissionCategory, int]:
+        """Count omissions grouped by category."""
+        counts: dict[OmissionCategory, int] = {}
+        for omission in self.omissions:
+            counts[omission.category] = counts.get(omission.category, 0) + 1
+        return counts
+
+    def render(self) -> str:
+        """Render a human-readable text summary of this run report."""
+        renderer = getattr(type(self), "_render_fn", None)
+        if renderer is not None:
+            return str(renderer(self))
+        return (
+            f"RunReport(processed={self.files_processed}, "
+            f"unchanged={self.files_unchanged}, "
+            f"skipped={self.files_skipped}, "
+            f"failed={self.files_failed})"
+        )
+
 
 def _locator_to_dict(locator: Locator) -> dict[str, object]:
     if isinstance(locator, MarkdownLocator):
