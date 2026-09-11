@@ -104,7 +104,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 5.3, 7.3_
   - _Boundary: ImageExtractor_
 
-- [ ] 5. The vision seam
+- [x] 5. The vision seam
 - [x] 5.1 Image resolution with gates, cache, chart-range short-circuit, and bounded fan-out
   - Define `PIPELINE_VERSION` as a module constant derived from detector, recognizer and digit-checker identities — changing an engine without bumping it is a review failure — so identity and the cache key can be handed the version as a value
   - Extend `OmissionCategory` with `NUMERIC_DISAGREED` in `types.py` (the vision task is when that category becomes observable)
@@ -113,7 +113,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: with a fake describer, a below-threshold image never reaches it; a cache hit never reaches it; an ImageRef with chart_ranges never reaches it; without model files every remaining above-threshold image becomes a vision-unavailable omission naming the missing capability; the fake's in-flight count never exceeds configured concurrency
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 5.10, 9.4_
   - _Depends: 2.3, 4.7_
-- [ ] 5.2 Local OCR describer with a second vote on digits
+- [x] 5.2 Local OCR describer with a second vote on digits
   - Load InfiniFlow DeepDoc `det.onnx` and `rec.onnx` through ONNX Runtime CPU; run Tesseract 5 LSTM on the same crops as the digit checker; emit concatenated recognised text; keep a numeric token only when both engines agree after normalisation; drop a number that only one engine produced; if that emptying leaves no text, raise a path that becomes `NUMERIC_DISAGREED`; missing model files raise `VisionUnavailable` for the rest of the run; never import `httpx`; never open a socket
   - Observable: a fixture chart image whose primary OCR reads `12.4` and whose checker reads `12.4` keeps `12.4`; the same fixture with the checker reading `12.9` drops the number; a planted HTTP transport records zero requests; absent `det.onnx` names the missing capability
   - _Requirements: 5.6, 5.7, 5.9, 10.2, 10.3, 10.4, 10.5_
@@ -191,3 +191,4 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
 - 4.6: `anchored_objects(ws)` is the only `_images`/`_charts` access. Chart ImageRef bytes are a size-matched blank PNG because openpyxl cannot rasterize; series ranges on `chart_ranges` are the 4.7 payload. Vision (5.1) should not spend a request describing that blank PNG when ranges are present.
 - 4.7: `ImageExtractor` always emits the ImageRef. Size gate is 5.1. Fixtures: `chart.png` 256×201, `icon.jpg` 16×16.
 - 5.1: `PIPELINE_VERSION` derived from detector, recognizer, and digit-checker IDs. Gate order in `resolve`/`resolve_all`: threshold -> chart_ranges -> cache -> models present -> describe -> cache store. Concurrency bounded by `vision_concurrency` via `ThreadPoolExecutor`. `NUMERIC_DISAGREED` added to `OmissionCategory`.
+- 5.2: `LocalOcrDescriber` loads `det.onnx` and `rec.onnx` via CPU ONNX Runtime and verifies digits using Tesseract 5 LSTM. Numbers without dual-engine agreement are dropped via `filter_numeric_tokens`; if dropping leaves no text, `NumericDisagreedError` is raised. No `httpx` or network socket is used.

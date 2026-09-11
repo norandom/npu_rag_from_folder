@@ -36,15 +36,23 @@ from npu_rag.ingest.types import (
 )
 from npu_rag.ingest.vision import (
     PIPELINE_VERSION,
+    LocalOcrDescriber,
     NumericDisagreedError,
     VisionDescriber,
+    filter_numeric_tokens,
     resolve,
     resolve_all,
 )
 
+from io import BytesIO
+from PIL import Image
+
 ROOT = Path("test_root")
 BUDGET = 256
-DUMMY_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00\x00\x00\x01\x00"
+
+_buf = BytesIO()
+Image.new("RGB", (16, 16), color="white").save(_buf, format="PNG")
+VALID_PNG = _buf.getvalue()
 
 
 def make_config(**overrides: object) -> IngestConfig:
@@ -60,7 +68,7 @@ def make_config(**overrides: object) -> IngestConfig:
 
 def make_ref(
     *,
-    data: bytes = DUMMY_PNG,
+    data: bytes = VALID_PNG,
     width: int = 300,
     height: int = 300,
     locator: object = None,
@@ -322,3 +330,99 @@ def test_resolve_all_bounded_concurrency_and_order_preservation(tmp_path: Path) 
     assert fake.call_count == 4
     # Max in-flight count should not exceed concurrency limit
     assert fake.max_in_flight <= concurrency
+
+
+# --------------------------------------------------------------------------
+# Task 5.2: Local OCR describer and second vote on digits
+# --------------------------------------------------------------------------
+
+
+def test_filter_numeric_tokens_keeps_agreed_number() -> None:
+    """Requirement 5.9: Primary reads 12.4 and checker reads 12.4 -> keeps 12.4."""
+    result = filter_numeric_tokens("12.4", "12.4")
+    assert result == "12.4"
+
+
+def test_filter_numeric_tokens_drops_disagreed_number_and_raises() -> None:
+    """Requirement 5.9: Primary reads 12.4 and checker reads 12.9 -> drops 12.4;
+    emptying leaves no text, so it raises NumericDisagreedError."""
+    with pytest.raises(NumericDisagreedError):
+        filter_numeric_tokens("12.4", "12.9")
+
+
+def test_filter_numeric_tokens_keeps_prose_when_number_disagreed() -> None:
+    """Requirement 5.9: Disagreed number is dropped, but prose words remain."""
+    result = filter_numeric_tokens("Q1 Revenue 12.4", "Q1 Revenue 12.9")
+    assert result == "Q1 Revenue"
+
+
+def test_absent_det_model_names_missing_capability() -> None:
+    """Requirements 5.2, 10.5: Absent det.onnx raises VisionUnavailable naming det.onnx."""
+    with pytest.raises(VisionUnavailable) as exc_info:
+        LocalOcrDescriber(det_model=Path("nonexistent/det.onnx"))
+    assert "det.onnx" in (exc_info.value.missing_capability or "")
+
+
+def _dummy_engine(img: object) -> list[object]:
+    return []
+
+
+def test_absent_rec_model_names_missing_capability() -> None:
+    """Requirements 5.2, 10.5: Absent rec.onnx raises VisionUnavailable naming rec.onnx."""
+    with pytest.raises(VisionUnavailable) as exc_info:
+        LocalOcrDescriber(det_model=_dummy_engine, rec_model=Path("nonexistent/rec.onnx"))
+    assert "rec.onnx" in (exc_info.value.missing_capability or "")
+
+
+def test_absent_checker_names_missing_capability() -> None:
+    """Requirements 5.2, 10.5: Absent tesseract raises VisionUnavailable naming tesseract_5."""
+    with pytest.raises(VisionUnavailable) as exc_info:
+        LocalOcrDescriber(
+            det_model=_dummy_engine,
+            rec_model=_dummy_engine,
+            checker=Path("nonexistent/tesseract.exe"),
+        )
+    assert "tesseract" in (exc_info.value.missing_capability or "").lower()
+
+
+def test_local_ocr_describer_agreed_digits_emits_text() -> None:
+    """Requirement 5.9: Both engines agree on 12.4 -> emits 12.4."""
+    describer = LocalOcrDescriber(
+        det_model=lambda img: [img],  # 1 crop
+        rec_model=lambda crop: "12.4",
+        checker=lambda crop: "12.4",
+    )
+    ref = make_ref(width=256, height=256)
+    text = describer.describe(ref)
+    assert text == "12.4"
+
+
+def test_local_ocr_describer_disagreed_digits_raises_numeric_disagreed() -> None:
+    """Requirement 5.9: Primary reads 12.4 and checker reads 12.9 -> raises NumericDisagreedError."""
+    describer = LocalOcrDescriber(
+        det_model=lambda img: [img],  # 1 crop
+        rec_model=lambda crop: "12.4",
+        checker=lambda crop: "12.9",
+    )
+    ref = make_ref(width=256, height=256)
+    with pytest.raises(NumericDisagreedError):
+        describer.describe(ref)
+
+
+def test_local_ocr_describer_never_issues_http_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Requirements 10.2, 10.3: Never opens a socket or makes network requests."""
+    import socket
+
+    def _fail_socket(*args: object, **kwargs: object) -> None:
+        pytest.fail("Network socket opened during local OCR!")
+
+    monkeypatch.setattr(socket, "socket", _fail_socket)
+
+    describer = LocalOcrDescriber(
+        det_model=lambda img: [img],
+        rec_model=lambda crop: "local text 100",
+        checker=lambda crop: "local text 100",
+    )
+    ref = make_ref(width=256, height=256)
+    assert describer.describe(ref) == "local text 100"
+

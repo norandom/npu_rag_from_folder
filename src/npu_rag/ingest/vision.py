@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import shutil
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import Any, Callable, ClassVar, Protocol
 
 from npu_rag.ingest.config import IngestConfig
 from npu_rag.ingest.errors import VisionError, VisionUnavailable
@@ -43,8 +44,10 @@ __all__ = [
     "DETECTOR_ID",
     "PIPELINE_VERSION",
     "RECOGNIZER_ID",
+    "LocalOcrDescriber",
     "NumericDisagreedError",
     "VisionDescriber",
+    "filter_numeric_tokens",
     "format_chart_ranges",
     "resolve",
     "resolve_all",
@@ -76,6 +79,206 @@ class VisionDescriber(Protocol):
         or required external binaries are absent.
         """
         ...
+
+
+_CURRENCY_AND_SYMBOLS = "$€£¥%,"
+
+
+def _is_numeric_token(token: str) -> bool:
+    return any(ch.isdigit() for ch in token)
+
+
+def _normalize_token(token: str) -> str:
+    cleaned = token
+    for sym in _CURRENCY_AND_SYMBOLS:
+        cleaned = cleaned.replace(sym, "")
+    return cleaned.strip("()[]{}'\" \t\r\n").lower()
+
+
+def filter_numeric_tokens(primary_text: str, checker_text: str) -> str:
+    """Keep numeric tokens only when primary recognizer and checker agree.
+
+    Drop numbers that only one engine produced. Non-numeric text is kept.
+    If dropping disagreed numbers leaves no text, raises NumericDisagreedError.
+    (Requirement 5.9).
+    """
+    primary_words = primary_text.split()
+    checker_words = checker_text.split()
+
+    checker_normalized_numbers = {
+        _normalize_token(w) for w in checker_words if _is_numeric_token(w)
+    }
+
+    kept: list[str] = []
+    for word in primary_words:
+        if _is_numeric_token(word):
+            norm = _normalize_token(word)
+            if norm in checker_normalized_numbers:
+                kept.append(word)
+            # otherwise dropped!
+        else:
+            kept.append(word)
+
+    result = " ".join(kept).strip()
+    if not result:
+        raise NumericDisagreedError(
+            f"numeric token disagreement between primary ({primary_text!r}) and "
+            f"checker ({checker_text!r}) left no text"
+        )
+    return result
+
+
+class LocalOcrDescriber:
+    """Local OCR using InfiniFlow det+rec with Tesseract 5 digit verification.
+
+    Conforms to VisionDescriber protocol. Never imports httpx, never opens a
+    network socket.
+    """
+
+    def __init__(
+        self,
+        *,
+        det_model: Path | Any = None,
+        rec_model: Path | Any = None,
+        checker: Path | str | Any = None,
+        recognizer_id: str = RECOGNIZER_ID,
+    ) -> None:
+        self.recognizer_id = recognizer_id
+
+        # Detector: loads det.onnx on CPU
+        if det_model is None:
+            default_det = Path(".npu_rag/models/ocr/det.onnx")
+            if not default_det.is_file():
+                raise VisionUnavailable(
+                    "detector model absent: det.onnx", missing_capability="det.onnx"
+                )
+            self._det: Any = self._init_ort_session(default_det)
+        elif isinstance(det_model, Path):
+            if not det_model.is_file():
+                raise VisionUnavailable(
+                    f"detector model absent: {det_model.name}",
+                    missing_capability=det_model.name,
+                )
+            self._det = self._init_ort_session(det_model)
+        else:
+            self._det = det_model
+
+        # Recognizer: loads rec.onnx on CPU
+        if rec_model is None:
+            default_rec = Path(".npu_rag/models/ocr/rec.onnx")
+            if not default_rec.is_file():
+                raise VisionUnavailable(
+                    "recognition model absent: rec.onnx", missing_capability="rec.onnx"
+                )
+            self._rec: Any = self._init_ort_session(default_rec)
+        elif isinstance(rec_model, Path):
+            if not rec_model.is_file():
+                raise VisionUnavailable(
+                    f"recognition model absent: {rec_model.name}",
+                    missing_capability=rec_model.name,
+                )
+            self._rec = self._init_ort_session(rec_model)
+        else:
+            self._rec = rec_model
+
+        # Checker: Tesseract 5 LSTM
+        if checker is None:
+            tess = shutil.which("tesseract")
+            if not tess:
+                raise VisionUnavailable(
+                    "tesseract 5 absent", missing_capability="tesseract_5"
+                )
+            self._checker: Any = tess
+        elif isinstance(checker, Path):
+            if not checker.is_file():
+                raise VisionUnavailable(
+                    f"tesseract binary absent: {checker.name}",
+                    missing_capability="tesseract_5",
+                )
+            self._checker = str(checker)
+        else:
+            self._checker = checker
+
+    @staticmethod
+    def _init_ort_session(path: Path) -> Any:
+        import onnxruntime as ort  # type: ignore[import-untyped]
+
+        return ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+
+    def describe(self, image: ImageRef) -> str:
+        """Transcribe text locally from image and verify digits."""
+        from io import BytesIO
+        from PIL import Image
+
+        try:
+            pil_image = Image.open(BytesIO(image.data)).convert("RGB")
+        except Exception as exc:
+            raise VisionError(f"could not decode image: {exc}", stage="vision") from exc
+
+        # 1. Detect text crops
+        crops: list[Any]
+        if callable(self._det):
+            crops = self._det(pil_image)
+        else:
+            crops = [pil_image]
+
+        if not crops:
+            crops = [pil_image]
+
+        texts: list[str] = []
+        for crop in crops:
+            # 2. Primary recognition
+            if callable(self._rec):
+                primary_text = self._rec(crop)
+            else:
+                primary_text = ""
+
+            # 3. Checker recognition
+            if callable(self._checker):
+                checker_text = self._checker(crop)
+            else:
+                checker_text = self._run_tesseract(crop)
+
+            # 4. Filter numeric tokens
+            filtered = filter_numeric_tokens(primary_text, checker_text)
+            if filtered:
+                texts.append(filtered)
+
+        full = "\n".join(texts).strip()
+        if not full:
+            raise NumericDisagreedError("no text remained after OCR numeric agreement")
+        return full
+
+    def _run_tesseract(self, crop: Any) -> str:
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            try:
+                crop.save(tmp_path)
+                cmd = [
+                    str(self._checker),
+                    str(tmp_path),
+                    "stdout",
+                    "--oem",
+                    "1",
+                    "-l",
+                    "eng",
+                    "--psm",
+                    "6",
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                return proc.stdout.strip()
+            except Exception as exc:
+                raise VisionError(f"tesseract execution failed: {exc}", stage="vision") from exc
+            finally:
+                tmp_path.unlink(missing_ok=True)
 
 
 def format_chart_ranges(ranges: ChartRanges) -> str:
