@@ -146,7 +146,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 8.3, 8.6, 9.1, 9.5, 10.1_
   - _Depends: 2.2, 3.1, 3.2, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 5.1, 6.1, 6.2, 6.3, 7.1_
 
-- [ ] 8. Validation
+- [x] 8. Validation
 - [x] 8.1 Incremental behaviour end to end
   - Run over a temporary root twice: the second run extracts nothing, issues no describer call, reports no work required, and its report still carries every record from the store; delete a file and its chunk ids are reported removed; change one parameter and affected files are reclassified changed; add one file and only it is processed
   - Observable: across the four scenarios the extractor and describer fakes record exactly the calls the scenario permits and no others, and each report's counts and removed ids match the literal expected values
@@ -162,7 +162,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Requirements: 6.7_
   - _Boundary: token contract_
   - _Depends: 1.6_
-- [ ] 8.4 (P) Failure isolation across a mixed root
+- [x] 8.4 (P) Failure isolation across a mixed root
   - A root holding a corrupt PDF, a malformed workbook and an undecodable image among good files: each bad file is a failed omission with its reason, the run completes, good files are committed; a root where every file is bad still yields a report with counts
   - Observable: the report lists exactly the three bad files under failed with a reason naming each file's format, the state store holds a committed row for every good file and none for the bad ones, and the all-bad root returns a report whose failed count equals its file count
   - _Requirements: 9.1, 9.2, 9.3, 9.5_
