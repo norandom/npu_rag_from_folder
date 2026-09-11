@@ -147,7 +147,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Depends: 2.2, 3.1, 3.2, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 5.1, 6.1, 6.2, 6.3, 7.1_
 
 - [ ] 8. Validation
-- [ ] 8.1 Incremental behaviour end to end
+- [x] 8.1 Incremental behaviour end to end
   - Run over a temporary root twice: the second run extracts nothing, issues no describer call, reports no work required, and its report still carries every record from the store; delete a file and its chunk ids are reported removed; change one parameter and affected files are reclassified changed; add one file and only it is processed
   - Observable: across the four scenarios the extractor and describer fakes record exactly the calls the scenario permits and no others, and each report's counts and removed ids match the literal expected values
   - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
