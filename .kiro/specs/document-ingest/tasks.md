@@ -151,7 +151,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Run over a temporary root twice: the second run extracts nothing, issues no describer call, reports no work required, and its report still carries every record from the store; delete a file and its chunk ids are reported removed; change one parameter and affected files are reclassified changed; add one file and only it is processed
   - Observable: across the four scenarios the extractor and describer fakes record exactly the calls the scenario permits and no others, and each report's counts and removed ids match the literal expected values
   - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
-- [ ] 8.2 (P) Offline and absent-model behaviour
+- [x] 8.2 (P) Offline and absent-model behaviour
   - With OCR model files absent, every image reference is a vision-unavailable omission naming the capability and the run completes; install a transport that fails on any request and prove none is made — the proof is about requests issued, not the import set, so the runtime's transitive Hub import cannot fail it; assert no provider or session module from the runtime is imported and that `OpenRouterCredential` is not consulted
   - Observable: the failing transport's request counter reads zero after a full run, the report lists every image by path under vision-unavailable with the capability named, and the loaded-module set contains no runtime provider or session module
   - _Requirements: 5.2, 9.4, 10.1, 10.2, 10.3, 10.5_
