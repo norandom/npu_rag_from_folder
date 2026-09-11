@@ -8,7 +8,7 @@
   - _Requirements: 1.1, 8.1_
   - _Boundary: package baseline_
 
-- [ ] 1.2 Define domain types, search options, and error taxonomy
+- [x] 1.2 Define domain types, search options, and error taxonomy
   - Define `SearchMode` (DENSE_ONLY, LEXICAL_ONLY, HYBRID), `DistanceMetric` (COSINE, DOT, L2), `FusionMethod` (RRF, LINEAR)
   - Define `SearchOptions`, `SearchResult`, `SearchResponse`, `SyncSummary`, `IndexStats`
   - Define error hierarchy rooted in `IndexError` (`StoreError`, `QueryError`, `SyncError`)
