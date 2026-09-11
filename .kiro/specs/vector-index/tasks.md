@@ -16,8 +16,8 @@
   - _Requirements: 1.1, 5.1, 8.1, 8.4_
   - _Boundary: types and errors_
 
-- [ ] 2. Schema and Durable Embedded Store
-- [ ] 2.1 Define LanceDB schema and record conversion
+- [x] 2. Schema and Durable Embedded Store
+- [x] 2.1 Define LanceDB schema and record conversion
   - Implement `ChunkSchema` using `lancedb.pydantic.LanceModel` with 768-dim float32 `Vector` field
   - Implement conversion functions between `ChunkRecord` (from `document-ingest`) and `ChunkSchema`
   - Encode and decode locator structures (`locator_type`, `locator_json`) faithfully
