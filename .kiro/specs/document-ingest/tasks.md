@@ -120,7 +120,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - _Depends: 5.1_
 
 - [ ] 6. Chunking
-- [ ] 6.1 Measurement, policy, and record assembly
+- [x] 6.1 Measurement, policy, and record assembly
   - Measure every candidate with the document title attached under the document convention; refuse construction if the budget disagrees with the tokenizer's limit; declare the overlap policy for every chunk kind; assemble records with chunk ids and token counts
   - Observable: a fixture whose content alone fits the budget but whose content plus title does not is reported as over budget; a test fails if a chunk kind exists without an overlap policy entry
   - _Requirements: 6.1, 6.2, 6.5, 7.1_
