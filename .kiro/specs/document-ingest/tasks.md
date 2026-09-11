@@ -156,7 +156,7 @@ Conventions that bind every task below, inherited from `npu-embedding-runtime` a
   - Observable: the failing transport's request counter reads zero after a full run, the report lists every image by path under vision-unavailable with the capability named, and the loaded-module set contains no runtime provider or session module
   - _Requirements: 5.2, 9.4, 10.1, 10.2, 10.3, 10.5_
   - _Boundary: offline validation_
-- [ ] 8.3 (P) Token contract with the runtime, both directions
+- [x] 8.3 (P) Token contract with the runtime, both directions
   - For a sample drawn from the runtime's committed corpus fixture, a measurement within budget implies the runtime does not truncate that input and a measurement over budget implies it does; run unconditionally against the offline tokenizer fixture, failing rather than skipping, and opt-in against the gated default model
   - Observable: the sample contains inputs on both sides of the budget, and for every one the ingest measurement and the runtime's truncated-index set agree — with a non-vacuity control asserting the sample is not all on one side
   - _Requirements: 6.7_
