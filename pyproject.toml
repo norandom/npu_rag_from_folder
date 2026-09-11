@@ -56,6 +56,8 @@ dependencies = [
     "openpyxl>=3.1.5",
     "pypdfium2>=5.13",
     "pillow",
+    # vector-index: LanceDB embedded vector storage and native FTS
+    "lancedb>=0.38.0",
 ]
 
 [project.optional-dependencies]

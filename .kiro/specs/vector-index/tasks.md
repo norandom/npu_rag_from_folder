@@ -1,7 +1,7 @@
 # Implementation Plan: vector-index
 
-- [ ] 1. Foundation: Baseline, Dependencies, Types, and Boundaries
-- [ ] 1.1 Declare dependencies and establish package baseline
+- [x] 1. Foundation: Baseline, Dependencies, Types, and Boundaries
+- [x] 1.1 Declare dependencies and establish package baseline
   - Add `lancedb>=0.38.0` to `pyproject.toml` dependencies; create `src/npu_rag/index/` package structure
   - Establish layer-order boundary test asserting `npu_rag.index` may import `npu_rag.embedding` and `npu_rag.ingest`, but neither upstream package imports `npu_rag.index`
   - Observable: `import npu_rag.index` succeeds, and boundary tests enforce clean one-way dependency direction
