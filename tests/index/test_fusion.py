@@ -7,7 +7,12 @@ import math
 import pytest
 
 from npu_rag.index.errors import ConfigurationError
-from npu_rag.index.fusion import ReciprocalRankFusion, reciprocal_rank_fusion
+from npu_rag.index.fusion import (
+    LinearCombination,
+    ReciprocalRankFusion,
+    linear_combination_fusion,
+    reciprocal_rank_fusion,
+)
 from npu_rag.index.types import SearchResult
 
 
@@ -136,3 +141,87 @@ def test_rrf_configuration_validation() -> None:
 
     with pytest.raises(ConfigurationError, match="RRF weights must be non-negative"):
         ReciprocalRankFusion(dense_weight=-1.0)
+
+
+def test_linear_combination_normalized_range_and_blending() -> None:
+    # d1 is strong in both (dense score 0.9, lexical 20.0)
+    # d2 is strong in dense only (dense score 0.85, not in lexical)
+    # d3 is strong in lexical only (not in dense, lexical 25.0)
+    dense = [
+        _make_result("d1", score=0.9, dense_distance=0.1, dense_rank=0),
+        _make_result("d2", score=0.85, dense_distance=0.15, dense_rank=1),
+    ]
+    lexical = [
+        _make_result("d3", score=25.0, lexical_score=25.0, lexical_rank=0),
+        _make_result("d1", score=20.0, lexical_score=20.0, lexical_rank=1),
+    ]
+
+    lc = LinearCombination(alpha=0.5)
+    fused = lc.fuse(dense, lexical)
+
+    # In dense: d1 has score 0.9 (norm 1.0), d2 has score 0.85 (norm 0.0)
+    # In lexical: d3 has score 25.0 (norm 1.0), d1 has score 20.0 (norm 0.0)
+    # Combined:
+    # d1: 0.5 * 1.0 + 0.5 * 0.0 = 0.5
+    # d3: 0.5 * 0.0 + 0.5 * 1.0 = 0.5
+    # d2: 0.5 * 0.0 + 0.5 * 0.0 = 0.0
+    for res in fused:
+        assert 0.0 <= res.score <= 1.0
+
+    scores = {r.chunk_id: r.score for r in fused}
+    assert math.isclose(scores["d1"], 0.5, abs_tol=1e-5)
+    assert math.isclose(scores["d3"], 0.5, abs_tol=1e-5)
+    assert math.isclose(scores["d2"], 0.0, abs_tol=1e-5)
+
+
+def test_linear_combination_dynamic_alpha_shift() -> None:
+    dense = [
+        _make_result("dense_top", score=1.0, dense_rank=0),
+        _make_result("dense_bot", score=0.2, dense_rank=1),
+    ]
+    lexical = [
+        _make_result("lex_top", score=30.0, lexical_score=30.0, lexical_rank=0),
+        _make_result("dense_top", score=5.0, lexical_score=5.0, lexical_rank=1),
+    ]
+
+    # When alpha = 1.0: dense ranking dominates completely
+    fused_dense = linear_combination_fusion(dense, lexical, alpha=1.0)
+    assert fused_dense[0].chunk_id == "dense_top"
+
+    # When alpha = 0.0: lexical ranking dominates completely
+    fused_lex = linear_combination_fusion(dense, lexical, alpha=0.0)
+    assert fused_lex[0].chunk_id == "lex_top"
+
+
+def test_linear_combination_single_candidate_normalization() -> None:
+    dense = [_make_result("d1", score=0.8, dense_rank=0)]
+    lexical = [_make_result("l1", score=10.0, lexical_score=10.0, lexical_rank=0)]
+
+    fused = linear_combination_fusion(dense, lexical, alpha=0.7)
+    assert len(fused) == 2
+    # Single candidate in dense normalized to 1.0; 0.7 * 1.0 = 0.7
+    d1 = next(r for r in fused if r.chunk_id == "d1")
+    assert math.isclose(d1.score, 0.7, abs_tol=1e-5)
+
+    # Single candidate in lexical normalized to 1.0; 0.3 * 1.0 = 0.3
+    l1 = next(r for r in fused if r.chunk_id == "l1")
+    assert math.isclose(l1.score, 0.3, abs_tol=1e-5)
+
+
+def test_linear_combination_limit_and_empty() -> None:
+    lc = LinearCombination(alpha=0.5)
+    assert lc.fuse([], []) == []
+
+    dense = [_make_result(f"d{i}", score=float(i), dense_rank=i) for i in range(10)]
+    lexical = [_make_result(f"l{i}", score=float(i), lexical_score=float(i), lexical_rank=i) for i in range(10)]
+    fused = lc.fuse(dense, lexical, limit=3)
+    assert len(fused) == 3
+
+
+def test_linear_combination_alpha_validation() -> None:
+    with pytest.raises(ConfigurationError, match="must be in"):
+        LinearCombination(alpha=-0.1)
+
+    with pytest.raises(ConfigurationError, match="must be in"):
+        LinearCombination(alpha=1.1)
+

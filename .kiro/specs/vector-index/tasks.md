@@ -59,7 +59,7 @@
   - _Requirements: 4.2, 4.3, 4.4_
   - _Boundary: retriever_
 
-- [ ] 4. Hybrid Retrieval and Score Fusion
+- [x] 4. Hybrid Retrieval and Score Fusion
 - [x] 4.1 Implement Reciprocal Rank Fusion (RRF)
   - Implement RRF algorithm merging dense rank and lexical rank with configurable constant $k$ (default 60) and weights
   - Handle asymmetric result sets (items appearing in only dense or only lexical candidates)
@@ -67,7 +67,7 @@
   - _Requirements: 5.2, 5.4_
   - _Boundary: fusion_
 
-- [ ] 4.2 Implement Linear Combination fusion
+- [x] 4.2 Implement Linear Combination fusion
   - Implement min-max score normalisation for dense distances and BM25 scores
   - Compute weighted combination $\alpha \cdot s_{dense} + (1 - \alpha) \cdot s_{fts}$
   - Observable: normalized fusion produces scores in $[0, 1]$; changing $\alpha$ dynamically shifts weight between dense and lexical rankings
