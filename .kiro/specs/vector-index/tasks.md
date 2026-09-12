@@ -97,8 +97,8 @@
   - _Requirements: 7.1, 7.2, 7.3, 7.4_
   - _Boundary: expansion_
 
-- [ ] 6. Synchronization Bridge
-- [ ] 6.1 Implement `IndexSynchronizer` from `IngestReport` and `EmbeddingService`
+- [x] 6. Synchronization Bridge
+- [x] 6.1 Implement `IndexSynchronizer` from `IngestReport` and `EmbeddingService`
   - Purge removed chunk IDs specified in `IngestReport.removed_chunk_ids`
   - Skip unchanged files without re-embedding
   - Transform new and changed chunks to `DocumentText(content, title)`, embed via `embed_service.embed_documents`, and upsert into store
