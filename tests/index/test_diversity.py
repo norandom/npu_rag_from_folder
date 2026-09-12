@@ -5,9 +5,12 @@ from __future__ import annotations
 import pytest
 
 from npu_rag.index.diversity import (
+    DocumentRollup,
     MaximalMarginalRelevance,
     _cosine_similarity,
+    cap_chunks_per_document,
     maximal_marginal_relevance,
+    rollup_documents,
 )
 from npu_rag.index.errors import ConfigurationError
 from npu_rag.index.types import SearchResult
@@ -110,3 +113,117 @@ def test_mmr_validation_errors() -> None:
 
     with pytest.raises(ConfigurationError, match="must be in"):
         MaximalMarginalRelevance(lambda_mult=1.5)
+
+
+def test_cap_chunks_per_document() -> None:
+    candidates = [
+        _make_candidate("c1", vector=(1.0, 0.0), score=0.95, file_path="alpha.md"),
+        _make_candidate("c2", vector=(1.0, 0.0), score=0.90, file_path="alpha.md"),
+        _make_candidate("c3", vector=(1.0, 0.0), score=0.85, file_path="alpha.md"),
+        _make_candidate("c4", vector=(1.0, 0.0), score=0.80, file_path="beta.md"),
+        _make_candidate("c5", vector=(1.0, 0.0), score=0.75, file_path="beta.md"),
+    ]
+
+    # Cap at 2 chunks per document
+    capped = cap_chunks_per_document(candidates, max_chunks=2)
+    assert len(capped) == 4
+    # c3 (third chunk of alpha.md) should be excluded
+    ids = [r.chunk_id for r in capped]
+    assert ids == ["c1", "c2", "c4", "c5"]
+
+    # Cap at 1 chunk per document
+    capped_one = cap_chunks_per_document(candidates, max_chunks=1)
+    assert len(capped_one) == 2
+    assert [r.chunk_id for r in capped_one] == ["c1", "c4"]
+
+
+def test_rollup_documents_highest_chunk_mode() -> None:
+    candidates = [
+        _make_candidate("c1", vector=(1.0, 0.0), score=0.95, file_path="alpha.md"),
+        _make_candidate("c2", vector=(1.0, 0.0), score=0.90, file_path="beta.md"),
+        _make_candidate("c3", vector=(1.0, 0.0), score=0.85, file_path="alpha.md"),
+    ]
+    rolled = rollup_documents(candidates, aggregate=False)
+    assert len(rolled) == 2
+    assert [r.chunk_id for r in rolled] == ["c1", "c2"]
+
+
+def test_rollup_documents_aggregated_mode() -> None:
+    c1 = SearchResult(
+        chunk_id="c1",
+        file_path="docA.md",
+        title="Doc A",
+        chunk_kind="prose",
+        chunk_index=0,
+        headings=("Intro",),
+        locator_type="markdown",
+        locator_json="{}",
+        text="Section 1 introductory text.",
+        score=0.9,
+        token_count=15,
+        vector=(1.0, 0.0),
+    )
+    c2 = SearchResult(
+        chunk_id="c2",
+        file_path="docA.md",
+        title="Doc A",
+        chunk_kind="prose",
+        chunk_index=1,
+        headings=("Body",),
+        locator_type="markdown",
+        locator_json="{}",
+        text="Section 2 body content.",
+        score=0.7,
+        token_count=25,
+        vector=(0.8, 0.2),
+    )
+    c3 = SearchResult(
+        chunk_id="c3",
+        file_path="docB.md",
+        title="Doc B",
+        chunk_kind="prose",
+        chunk_index=0,
+        headings=(),
+        locator_type="markdown",
+        locator_json="{}",
+        text="Doc B lone chunk.",
+        score=0.8,
+        token_count=10,
+        vector=(0.5, 0.5),
+    )
+
+    aggregated = rollup_documents([c1, c2, c3], aggregate=True)
+    assert len(aggregated) == 2
+
+    docA = next(r for r in aggregated if r.file_path == "docA.md")
+    assert docA.chunk_kind == "document"
+    assert docA.score == 0.9  # highest score
+    assert "Section 1" in docA.text
+    assert "Section 2" in docA.text
+    assert docA.token_count == 40  # 15 + 25
+
+    docB = next(r for r in aggregated if r.file_path == "docB.md")
+    assert docB.score == 0.8
+    assert docB.token_count == 10
+
+
+def test_document_rollup_class() -> None:
+    rollup = DocumentRollup(max_chunks_per_document=1, rollup=True)
+    assert rollup.apply([]) == []
+
+    candidates = [
+        _make_candidate("c1", vector=(1.0, 0.0), score=0.9, file_path="alpha.md"),
+        _make_candidate("c2", vector=(1.0, 0.0), score=0.8, file_path="alpha.md"),
+    ]
+    res = rollup.apply(candidates)
+    assert len(res) == 1
+    assert res[0].chunk_id == "c1"
+
+
+def test_document_rollup_validation() -> None:
+    with pytest.raises(ConfigurationError, match="max_chunks_per_document must be greater than zero"):
+        DocumentRollup(max_chunks_per_document=0)
+
+    with pytest.raises(ConfigurationError, match="max_chunks_per_document must be greater than zero"):
+        cap_chunks_per_document([], max_chunks=-1)
+

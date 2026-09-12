@@ -81,7 +81,7 @@
   - _Requirements: 6.1_
   - _Boundary: diversity_
 
-- [ ] 5.2 Implement Document Rollup and per-document chunk capping
+- [x] 5.2 Implement Document Rollup and per-document chunk capping
   - Implement grouping of chunk hits by source `file_path`
   - Support `max_chunks_per_document` cap (e.g. at most 2 chunks per article)
   - Support collapsed document-level hit aggregation

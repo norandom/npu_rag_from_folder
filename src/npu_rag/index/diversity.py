@@ -116,3 +116,100 @@ def maximal_marginal_relevance(
     """Convenience functional interface for MaximalMarginalRelevance."""
     mmr = MaximalMarginalRelevance(lambda_mult=lambda_mult)
     return mmr.rerank(query_vector, candidates, limit=limit)
+
+
+def cap_chunks_per_document(
+    results: Sequence[SearchResult],
+    max_chunks: int,
+) -> list[SearchResult]:
+    """Filter results so at most max_chunks chunks are included for any single file_path."""
+    if max_chunks <= 0:
+        raise ConfigurationError("max_chunks_per_document must be greater than zero")
+
+    counts: dict[str, int] = {}
+    capped: list[SearchResult] = []
+    for res in results:
+        count = counts.get(res.file_path, 0)
+        if count < max_chunks:
+            counts[res.file_path] = count + 1
+            capped.append(res)
+    return capped
+
+
+def rollup_documents(
+    results: Sequence[SearchResult],
+    *,
+    aggregate: bool = False,
+) -> list[SearchResult]:
+    """Group results by file_path and return either the highest-scoring chunk or an aggregated hit."""
+    if not results:
+        return []
+
+    if not aggregate:
+        # Return highest-scoring single chunk per distinct file_path
+        return cap_chunks_per_document(results, max_chunks=1)
+
+    # Aggregated document hit: group matched chunks by file_path preserving first-seen order
+    groups: dict[str, list[SearchResult]] = {}
+    for res in results:
+        if res.file_path not in groups:
+            groups[res.file_path] = []
+        groups[res.file_path].append(res)
+
+    aggregated: list[SearchResult] = []
+    for path, chunks in groups.items():
+        top_chunk = max(chunks, key=lambda c: c.score)
+        sorted_chunks = sorted(chunks, key=lambda c: c.chunk_index)
+        combined_text = "\n\n---\n\n".join(c.text for c in sorted_chunks)
+        total_tokens = sum(c.token_count for c in sorted_chunks)
+
+        agg_res = SearchResult(
+            chunk_id=top_chunk.chunk_id,
+            file_path=path,
+            title=top_chunk.title,
+            chunk_kind="document",
+            chunk_index=top_chunk.chunk_index,
+            headings=top_chunk.headings,
+            locator_type=top_chunk.locator_type,
+            locator_json=top_chunk.locator_json,
+            text=combined_text,
+            score=top_chunk.score,
+            dense_distance=top_chunk.dense_distance,
+            dense_rank=top_chunk.dense_rank,
+            lexical_score=top_chunk.lexical_score,
+            lexical_rank=top_chunk.lexical_rank,
+            expanded_context=top_chunk.expanded_context,
+            token_count=total_tokens,
+            vector=top_chunk.vector,
+        )
+        aggregated.append(agg_res)
+
+    return aggregated
+
+
+class DocumentRollup:
+    """Document-level grouping, capping, and rollup."""
+
+    def __init__(
+        self,
+        max_chunks_per_document: int | None = None,
+        rollup: bool = False,
+        aggregate: bool = False,
+    ) -> None:
+        if max_chunks_per_document is not None and max_chunks_per_document <= 0:
+            raise ConfigurationError("max_chunks_per_document must be greater than zero")
+        self.max_chunks_per_document = max_chunks_per_document
+        self.rollup = rollup
+        self.aggregate = aggregate
+
+    def apply(self, results: Sequence[SearchResult]) -> list[SearchResult]:
+        """Apply configured capping and rollup transformations to results."""
+        if not results:
+            return []
+        out = list(results)
+        if self.max_chunks_per_document is not None:
+            out = cap_chunks_per_document(out, self.max_chunks_per_document)
+        if self.rollup:
+            out = rollup_documents(out, aggregate=self.aggregate)
+        return out
+
