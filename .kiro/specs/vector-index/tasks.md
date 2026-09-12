@@ -74,7 +74,7 @@
   - _Requirements: 5.3, 5.4_
   - _Boundary: fusion_
 
-- [ ] 5. Diversity Control and Context Expansion
+- [x] 5. Diversity Control and Context Expansion
 - [x] 5.1 Implement Maximal Marginal Relevance (MMR) diversity reranking
   - Implement MMR algorithm balancing query similarity with pairwise candidate dissimilarity using $\lambda \in [0, 1]$
   - Observable: given clustered candidates with high mutual similarity, MMR promotes dissimilar candidates into top-k
@@ -89,7 +89,7 @@
   - _Requirements: 6.2, 6.3_
   - _Boundary: diversity_
 
-- [ ] 5.3 Implement neighbouring-chunk context expansion
+- [x] 5.3 Implement neighbouring-chunk context expansion
   - Look up adjacent chunks within window $[-w, +w]$ by `file_path` and `chunk_index`
   - Concatenate adjacent chunk text in reading order
   - Handle document boundary edge cases (chunk 0, final chunk) cleanly
