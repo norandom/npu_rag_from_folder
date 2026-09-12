@@ -11,27 +11,27 @@ from npu_rag.index.types import SearchResult
 
 def _merge_search_result(
     primary: SearchResult,
-    secondary: SearchResult | None,
+    alternate: SearchResult | None,
     fused_score: float,
 ) -> SearchResult:
-    """Combine metadata and score diagnostics from primary and secondary candidates."""
+    """Combine metadata and score diagnostics from primary and alternate candidates."""
     dense_dist = primary.dense_distance
     dense_rnk = primary.dense_rank
     lex_scr = primary.lexical_score
     lex_rnk = primary.lexical_rank
     vec = primary.vector
 
-    if secondary is not None:
+    if alternate is not None:
         if dense_dist is None:
-            dense_dist = secondary.dense_distance
+            dense_dist = alternate.dense_distance
         if dense_rnk is None:
-            dense_rnk = secondary.dense_rank
+            dense_rnk = alternate.dense_rank
         if lex_scr is None:
-            lex_scr = secondary.lexical_score
+            lex_scr = alternate.lexical_score
         if lex_rnk is None:
-            lex_rnk = secondary.lexical_rank
+            lex_rnk = alternate.lexical_rank
         if vec is None:
-            vec = secondary.vector
+            vec = alternate.vector
 
     return SearchResult(
         chunk_id=primary.chunk_id,
@@ -118,9 +118,9 @@ class ReciprocalRankFusion:
 
             primary = dense_res if dense_res is not None else lexical_res
             assert primary is not None
-            secondary = lexical_res if dense_res is not None else None
+            alternate = lexical_res if dense_res is not None else None
 
-            merged = _merge_search_result(primary, secondary, fused_score=total_score)
+            merged = _merge_search_result(primary, alternate, fused_score=total_score)
             scored_results.append((total_score, merged))
 
         # Sort descending by fused score; tie-break deterministically by chunk_id
@@ -222,9 +222,9 @@ class LinearCombination:
 
             primary = dense_res if dense_res is not None else lexical_res
             assert primary is not None
-            secondary = lexical_res if dense_res is not None else None
+            alternate = lexical_res if dense_res is not None else None
 
-            merged = _merge_search_result(primary, secondary, fused_score=combined_score)
+            merged = _merge_search_result(primary, alternate, fused_score=combined_score)
             scored_results.append((combined_score, merged))
 
         # Sort descending by fused score; tie-break deterministically by chunk_id

@@ -544,6 +544,6 @@ def test_no_owned_file_mentions_conda() -> None:
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in owned
-        if path != Path(__file__) and "conda" in path.read_text("utf-8").lower()
+        if path.resolve() != Path(__file__).resolve() and "conda" in path.read_text("utf-8").lower()
     ]
     assert offenders == []
