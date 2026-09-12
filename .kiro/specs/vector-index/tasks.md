@@ -108,7 +108,7 @@
   - _Boundary: sync_
 
 - [ ] 7. Query Orchestration and Public Surface
-- [ ] 7.1 Implement `VectorIndex` facade and public package API
+- [x] 7.1 Implement `VectorIndex` facade and public package API
   - Coordinate query embedding via `embed_service.embed_query(query)` (enforcing asymmetric query prefix)
   - Execute retrieval, fusion, reranking, diversity, and context expansion pipeline
   - Expose pluggable `Reranker` protocol with `PassThroughReranker` default
