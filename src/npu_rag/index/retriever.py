@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence, cast
 
-from lancedb.query import LanceVectorQueryBuilder
+from lancedb.query import LanceFtsQueryBuilder, LanceVectorQueryBuilder
 
 from npu_rag.index.errors import QueryError
 from npu_rag.index.schema import VECTOR_DIMENSION
@@ -153,3 +153,91 @@ class DenseRetriever:
             results.append(res)
 
         return results
+
+
+class LexicalRetriever:
+    """Native lexical BM25 retriever backed by LanceDB FTS index."""
+
+    def __init__(self, store: LanceIndexStore) -> None:
+        self._store = store
+
+    @property
+    def store(self) -> LanceIndexStore:
+        return self._store
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        filter_sql: str | None = None,
+        prefilter: bool = True,
+        include_vector: bool = True,
+    ) -> list[SearchResult]:
+        """Execute lexical BM25 search over the full-text search index.
+
+        Args:
+            query: Keyword or phrase query string.
+            limit: Maximum number of ranked records to return.
+            filter_sql: Optional SQL WHERE predicate for metadata filtering.
+            prefilter: True to filter before FTS scoring, False for post-filtering.
+            include_vector: Whether to attach candidate vector to each SearchResult.
+
+        Returns:
+            List of SearchResult objects sorted by BM25 relevance score.
+        """
+        if limit <= 0:
+            raise QueryError("Limit must be greater than zero")
+
+        if not query or not query.strip():
+            return []
+
+        if self._store.count() == 0:
+            return []
+
+        clean_query = query.strip()
+
+        try:
+            builder = cast(
+                LanceFtsQueryBuilder,
+                self._store.table.search(clean_query, query_type="fts"),
+            ).limit(limit)
+
+            if filter_sql:
+                builder = builder.where(filter_sql, prefilter=prefilter)
+
+            rows = builder.to_list()
+        except ValueError as exc:
+            msg = str(exc)
+            if "Cannot perform full text search" in msg:
+                # If FTS index has not been created yet, attempt to build it once
+                try:
+                    self._store.create_fts_index(field="text", replace=True)
+                    builder = cast(
+                        LanceFtsQueryBuilder,
+                        self._store.table.search(clean_query, query_type="fts"),
+                    ).limit(limit)
+                    if filter_sql:
+                        builder = builder.where(filter_sql, prefilter=prefilter)
+                    rows = builder.to_list()
+                except Exception as inner_exc:
+                    raise QueryError(f"Lexical retrieval failed: {inner_exc}") from inner_exc
+            else:
+                raise QueryError(f"Lexical retrieval failed: {exc}") from exc
+        except Exception as exc:
+            raise QueryError(f"Lexical retrieval failed: {exc}") from exc
+
+        results: list[SearchResult] = []
+        for rank, row in enumerate(rows):
+            score = float(row.get("_score", 0.0))
+            res = _row_to_search_result(
+                row,
+                score=score,
+                lexical_score=score,
+                lexical_rank=rank,
+                include_vector=include_vector,
+            )
+            results.append(res)
+
+        return results
+

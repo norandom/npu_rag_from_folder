@@ -9,7 +9,7 @@ from typing import Sequence
 import pytest
 
 from npu_rag.index.errors import QueryError
-from npu_rag.index.retriever import DenseRetriever
+from npu_rag.index.retriever import DenseRetriever, LexicalRetriever
 from npu_rag.index.schema import VECTOR_DIMENSION, ChunkSchema
 from npu_rag.index.store import LanceIndexStore
 from npu_rag.index.types import DistanceMetric
@@ -62,11 +62,33 @@ def populated_store(tmp_path: Path) -> LanceIndexStore:
     v2 = _make_unit_vector(2)
 
     chunks = [
-        _make_chunk("c1", file_path="alpha.md", chunk_index=0, chunk_kind="prose", vector=v0),
-        _make_chunk("c2", file_path="alpha.md", chunk_index=1, chunk_kind="table", vector=v1),
-        _make_chunk("c3", file_path="beta.md", chunk_index=0, chunk_kind="prose", vector=v2),
+        _make_chunk(
+            "c1",
+            file_path="alpha.md",
+            chunk_index=0,
+            chunk_kind="prose",
+            text="Neural processing units accelerate matrix multiplication",
+            vector=v0,
+        ),
+        _make_chunk(
+            "c2",
+            file_path="alpha.md",
+            chunk_index=1,
+            chunk_kind="table",
+            text="Quantum computing algorithms utilize qubit superposition",
+            vector=v1,
+        ),
+        _make_chunk(
+            "c3",
+            file_path="beta.md",
+            chunk_index=0,
+            chunk_kind="prose",
+            text="Traditional relational databases optimize b-tree indices",
+            vector=v2,
+        ),
     ]
     store.add(chunks)
+    store.create_fts_index(field="text", replace=True)
     return store
 
 
@@ -191,3 +213,84 @@ def test_dense_retriever_invalid_sql_raises_query_error(populated_store: LanceIn
     query_vec = _make_unit_vector(0)
     with pytest.raises(QueryError, match="Dense vector retrieval failed"):
         retriever.retrieve(query_vec, filter_sql="INVALID SQL SYNTAX !!!")
+
+
+def test_lexical_retriever_empty_store(empty_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(empty_store)
+    assert retriever.retrieve("neural") == []
+
+
+def test_lexical_retriever_empty_query(populated_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(populated_store)
+    assert retriever.retrieve("") == []
+    assert retriever.retrieve("   ") == []
+
+
+def test_lexical_retriever_invalid_limit(populated_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(populated_store)
+    with pytest.raises(QueryError, match="Limit must be greater than zero"):
+        retriever.retrieve("neural", limit=0)
+
+
+def test_lexical_retriever_exact_keyword_search(populated_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(populated_store)
+    results = retriever.retrieve("matrix multiplication", limit=5)
+
+    assert len(results) >= 1
+    top = results[0]
+    assert top.chunk_id == "c1"
+    assert top.lexical_rank == 0
+    assert top.lexical_score is not None and top.lexical_score > 0.0
+    assert top.score == top.lexical_score
+    assert top.dense_distance is None
+    assert top.dense_rank is None
+    assert top.file_path == "alpha.md"
+    assert top.vector is not None
+
+
+def test_lexical_retriever_nonexistent_word_returns_empty(populated_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(populated_store)
+    results = retriever.retrieve("nonexistentxyzword999", limit=5)
+    assert results == []
+
+
+def test_lexical_retriever_metadata_filtering(populated_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(populated_store)
+
+    # c2 contains 'qubit' and belongs to alpha.md
+    matching = retriever.retrieve("qubit", filter_sql="file_path = 'alpha.md'")
+    assert len(matching) == 1
+    assert matching[0].chunk_id == "c2"
+
+    # Filter excluding alpha.md should yield empty
+    excluded = retriever.retrieve("qubit", filter_sql="file_path = 'beta.md'")
+    assert excluded == []
+
+
+def test_lexical_retriever_auto_creates_index(tmp_path: Path) -> None:
+    store = LanceIndexStore(tmp_path / "lancedb_no_fts")
+    store.add([
+        _make_chunk(
+            "c_unindexed",
+            file_path="gamma.md",
+            chunk_index=0,
+            text="Autonomous agents navigate complex environments efficiently",
+        )
+    ])
+    # Do NOT call store.create_fts_index explicitly
+    assert store.stats().has_fts_index is False
+
+    retriever = LexicalRetriever(store)
+    results = retriever.retrieve("autonomous agents", limit=2)
+    assert len(results) == 1
+    assert results[0].chunk_id == "c_unindexed"
+    assert store.stats().has_fts_index is True
+
+
+def test_lexical_retriever_special_characters(populated_store: LanceIndexStore) -> None:
+    retriever = LexicalRetriever(populated_store)
+    # Punctuation and symbols shouldn't crash Tantivy
+    results = retriever.retrieve("matrix: multiplication! (accelerate)", limit=3)
+    assert len(results) >= 1
+    assert results[0].chunk_id == "c1"
+

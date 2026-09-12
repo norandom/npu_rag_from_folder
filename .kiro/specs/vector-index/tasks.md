@@ -41,7 +41,7 @@
   - _Requirements: 4.1_
   - _Boundary: store / fts_
 
-- [ ] 3. Retrieval Primitives
+- [x] 3. Retrieval Primitives
 - [x] 3.1 Implement `DenseRetriever` with exact kNN and metric selection
   - Execute exact brute-force flat search over vectors with `cosine` (default), `dot`, and `l2` metrics
   - Support SQL metadata pre-filtering and post-filtering
@@ -50,7 +50,7 @@
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
   - _Boundary: retriever_
 
-- [ ] 3.2 Implement `LexicalRetriever` with native BM25 FTS
+- [x] 3.2 Implement `LexicalRetriever` with native BM25 FTS
   - Execute lexical BM25 queries over the LanceDB FTS index
   - Extract and normalize BM25 relevance scores
   - Return empty results gracefully when a query contains zero matching terms
