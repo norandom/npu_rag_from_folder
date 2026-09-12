@@ -75,7 +75,7 @@
   - _Boundary: fusion_
 
 - [ ] 5. Diversity Control and Context Expansion
-- [ ] 5.1 Implement Maximal Marginal Relevance (MMR) diversity reranking
+- [x] 5.1 Implement Maximal Marginal Relevance (MMR) diversity reranking
   - Implement MMR algorithm balancing query similarity with pairwise candidate dissimilarity using $\lambda \in [0, 1]$
   - Observable: given clustered candidates with high mutual similarity, MMR promotes dissimilar candidates into top-k
   - _Requirements: 6.1_
