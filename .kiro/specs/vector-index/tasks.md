@@ -107,7 +107,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
   - _Boundary: sync_
 
-- [ ] 7. Query Orchestration and Public Surface
+- [x] 7. Query Orchestration and Public Surface
 - [x] 7.1 Implement `VectorIndex` facade and public package API
   - Coordinate query embedding via `embed_service.embed_query(query)` (enforcing asymmetric query prefix)
   - Execute retrieval, fusion, reranking, diversity, and context expansion pipeline
@@ -117,7 +117,7 @@
   - _Requirements: 8.1, 8.2, 8.3, 8.4_
   - _Boundary: service_
 
-- [ ] 7.2 Validate end-to-end search, sync, and diversity
+- [x] 7.2 Validate end-to-end search, sync, and diversity
   - Test end-to-end workflow: ingest document sample, embed and index, perform hybrid search with exact lexical queries and semantic queries
   - Validate MMR diversity and context expansion over real multi-chunk articles
   - Observable: hybrid search retrieves documents that both dense-only and lexical-only fail to rank at top; incremental re-run reuses index completely
