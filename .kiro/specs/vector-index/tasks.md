@@ -60,7 +60,7 @@
   - _Boundary: retriever_
 
 - [ ] 4. Hybrid Retrieval and Score Fusion
-- [ ] 4.1 Implement Reciprocal Rank Fusion (RRF)
+- [x] 4.1 Implement Reciprocal Rank Fusion (RRF)
   - Implement RRF algorithm merging dense rank and lexical rank with configurable constant $k$ (default 60) and weights
   - Handle asymmetric result sets (items appearing in only dense or only lexical candidates)
   - Observable: a document appearing in top positions of both candidate sets ranks highest; items appearing in only one set are scored correctly without failure
