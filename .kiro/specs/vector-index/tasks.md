@@ -25,7 +25,7 @@
   - _Requirements: 1.2_
   - _Boundary: schema_
 
-- [ ] 2.2 Implement `LanceIndexStore` table operations and lifecycle
+- [x] 2.2 Implement `LanceIndexStore` table operations and lifecycle
   - Connect to embedded LanceDB directory path; initialize or open `chunks` table
   - Support batch insert and atomic upsert keyed by `chunk_id`
   - Support deletion by chunk IDs, by `file_path`, and by SQL predicate
@@ -34,7 +34,7 @@
   - _Requirements: 1.1, 1.3, 1.4, 1.5_
   - _Boundary: store_
 
-- [ ] 2.3 Implement native FTS index lifecycle
+- [x] 2.3 Implement native FTS index lifecycle
   - Create and maintain Lance-native full-text index using `lancedb.index.FTS()` on the `text` field
   - Handle FTS index rebuild / refresh after batch updates
   - Observable: FTS index is created without tantivy warnings and indexes chunk text for lexical querying
