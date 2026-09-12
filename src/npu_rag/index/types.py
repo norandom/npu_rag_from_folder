@@ -68,6 +68,7 @@ class SearchResult:
     lexical_rank: int | None = None
     expanded_context: str | None = None
     token_count: int = 0
+    vector: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)

@@ -42,7 +42,7 @@
   - _Boundary: store / fts_
 
 - [ ] 3. Retrieval Primitives
-- [ ] 3.1 Implement `DenseRetriever` with exact kNN and metric selection
+- [x] 3.1 Implement `DenseRetriever` with exact kNN and metric selection
   - Execute exact brute-force flat search over vectors with `cosine` (default), `dot`, and `l2` metrics
   - Support SQL metadata pre-filtering and post-filtering
   - Support opt-in ANN indexing parameters (`nprobes`, `refine_factor`)
