@@ -56,7 +56,11 @@ dependencies = [
     "openpyxl>=3.1.5",
     "pypdfium2>=5.13",
     "pillow",
-    # vector-index: LanceDB embedded vector storage and native FTS
+    # vector-index: LanceDB embedded vector storage and native FTS.
+    # The floor is deliberate and the ceiling is expressed as a platform
+    # requirement rather than a version pin - see [tool.uv] below. lancedb
+    # 0.39.0 publishes no win_amd64 wheel, so an unconstrained resolve picks a
+    # version this machine cannot install.
     "lancedb>=0.38.0",
 ]
 
@@ -128,6 +132,16 @@ xfail_strict = true
 # `tools/` is repo tooling, not shipped code (the wheel packages only
 # src/npu_rag), so it is reachable via the repo root rather than the install.
 pythonpath = ["."]
+
+[tool.uv]
+# This project targets this machine: Windows on x86-64. Without this, uv
+# resolves against the union of platforms and may pick a distribution that
+# publishes no win_amd64 wheel - which is exactly what happened on 2026-09-12,
+# when an unpinned `lancedb>=0.38.0` resolved to 0.39.0 (manylinux and macOS
+# wheels only) and left `uv run` unable to sync at all. Stating the target
+# environment makes uv reject such a resolution instead of producing a lock
+# that cannot be installed here.
+required-environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
 
 [tool.mypy]
 python_version = "3.12"

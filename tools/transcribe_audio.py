@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import os
 import sys
 from pathlib import Path
@@ -212,7 +213,12 @@ def transcribe_via_gemini_direct(
 
 
 def main() -> None:
-    sys.stdout.reconfigure(encoding="utf-8")
+    # `sys.stdout` is typed `TextIO`, which has no `reconfigure`; only the
+    # concrete `TextIOWrapper` does. Narrowing rather than ignoring also makes
+    # this correct when stdout is redirected to something that is not a
+    # wrapper, where the call would otherwise raise at runtime.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")
     load_env_file()
 
     parser = argparse.ArgumentParser(
@@ -253,9 +259,15 @@ def main() -> None:
         if openrouter_key:
             model = args.model or DEFAULT_OPENROUTER_MODEL
             result = transcribe_via_openrouter(audio_file, openrouter_key, model=model, custom_instruction=args.instruction)
-        else:
+        elif gemini_key:
             model = args.model or DEFAULT_GEMINI_MODEL
             result = transcribe_via_gemini_direct(audio_file, gemini_key, model=model, custom_instruction=args.instruction)
+        else:
+            # Unreachable: the guard above exits when neither key is set. Stated
+            # as a raise rather than left implicit so the dispatch narrows both
+            # keys to `str`, and so a future edit that removes the guard fails
+            # here instead of passing `None` as an API key.
+            raise RuntimeError("no transcription credential available")
 
         output_path.write_text(result, encoding="utf-8")
         print(f"\n[Success] Transcription and translation saved to:\n  {output_path.resolve()}")
