@@ -64,6 +64,13 @@ dependencies = [
     "lancedb>=0.38.0",
 ]
 
+# search-cli requirement 1.1: the `npu-rag` console script, which is also what
+# makes `uvx npu-rag ...` work without a manually activated virtualenv. The
+# target module must stay importable without any heavy dependency - see
+# src/npu_rag/cli/main.py and tests/cli/test_cli_baseline.py.
+[project.scripts]
+npu-rag = "npu_rag.cli.main:main"
+
 [project.optional-dependencies]
 # ONNX export (task 3.2), deliberately OPTIONAL and deliberately NOT in the
 # default dependency set above.
