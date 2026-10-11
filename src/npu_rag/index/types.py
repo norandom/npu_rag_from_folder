@@ -111,3 +111,29 @@ class IndexStats:
     vector_dimension: int
     has_fts_index: bool
     index_size_bytes: int
+    #: Distinct embedding-model identities actually recorded on the rows,
+    #: sorted, with unstamped rows excluded (they are counted separately).
+    #: This is what the index **was built with**, which is a different fact
+    #: from what configuration currently says and the only one a reporter may
+    #: attribute to the index. Empty for an index whose rows are all unstamped,
+    #: and for an empty index.
+    model_identities: tuple[str, ...] = ()
+    #: Rows carrying no embedding-model identity at all - written either before
+    #: the column existed or by a caller that supplied none. Reported rather
+    #: than hidden, because an unstamped row's vector space is unknowable and
+    #: a reporter must be able to say so.
+    unstamped_chunks: int = 0
+
+    @property
+    def is_mixed_model(self) -> bool:
+        """Whether this table holds vectors from more than one vector space.
+
+        True for two or more recorded identities, and also for one recorded
+        identity sitting alongside unstamped rows - those rows came from some
+        other write and nothing says it used the same model. An index that is
+        *entirely* unstamped is not mixed: it is unknown, which
+        :attr:`unstamped_chunks` already states.
+        """
+        if len(self.model_identities) > 1:
+            return True
+        return bool(self.model_identities) and self.unstamped_chunks > 0

@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from npu_rag.embedding.types import ProviderChoice
+from npu_rag.index.compat import verify_model_identity as _verify_model_identity
 from npu_rag.index.diversity import DocumentRollup, maximal_marginal_relevance
 from npu_rag.index.errors import QueryError, SyncError
 from npu_rag.index.expansion import ContextExpander
 from npu_rag.index.fusion import linear_combination_fusion, reciprocal_rank_fusion
 from npu_rag.index.rerank import PassThroughReranker, Reranker
+from npu_rag.index.schema import UNSTAMPED_MODEL_IDENTITY
 from npu_rag.index.retriever import DenseRetriever, LexicalRetriever
 from npu_rag.index.store import LanceIndexStore
 from npu_rag.index.sync import IndexSynchronizer
@@ -82,22 +84,42 @@ class VectorIndex:
         """Return high-level index storage statistics."""
         return self._store.stats()
 
+    def verify_model_identity(self, model_identity: str) -> None:
+        """Raise ``ConfigurationError`` unless this index matches the model.
+
+        The read path's entry point into the one compatibility policy, so a
+        command that only queries does not have to reach through ``.store`` to
+        find it. ``sync`` applies the identical check itself; ``search`` does
+        **not** apply it implicitly, because a ``LEXICAL_ONLY`` query touches no
+        vector and is legitimately model-free, and because ``npu_rag.index``
+        has no way to learn the configured identity on its own. A command that
+        is about to run a dense or hybrid query must therefore call this first.
+        """
+        _verify_model_identity(self._store, model_identity)
+
     def sync(
         self,
         report: RunReport,
         embed_service: Any | None = None,
         *,
+        model_identity: str = UNSTAMPED_MODEL_IDENTITY,
         provider: ProviderChoice | str = ProviderChoice.AUTO,
         batch_size: int = 64,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> SyncSummary:
-        """Synchronize ingest report chunks with vector store and FTS index."""
+        """Synchronize ingest report chunks with vector store and FTS index.
+
+        ``model_identity`` is forwarded verbatim to ``IndexSynchronizer.sync``,
+        which refuses the write if it disagrees with what the index already
+        holds. See that method for why it is the caller's to supply.
+        """
         service = embed_service or self._embed_service
         if service is None:
             raise SyncError("Cannot synchronize: no embed_service was provided")
         return self._synchronizer.sync(
             report,
             service,
+            model_identity=model_identity,
             provider=provider,
             batch_size=batch_size,
             progress_callback=progress_callback,

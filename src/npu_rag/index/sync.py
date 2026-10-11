@@ -7,8 +7,13 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from npu_rag.embedding.types import DocumentText, ProviderChoice
+from npu_rag.index.compat import verify_model_identity
 from npu_rag.index.errors import SyncError
-from npu_rag.index.schema import ChunkSchema, chunk_record_to_schema
+from npu_rag.index.schema import (
+    UNSTAMPED_MODEL_IDENTITY,
+    ChunkSchema,
+    chunk_record_to_schema,
+)
 from npu_rag.index.store import LanceIndexStore
 from npu_rag.index.types import SyncSummary
 from npu_rag.ingest.types import ChunkRecord, RunReport
@@ -31,23 +36,46 @@ class IndexSynchronizer:
         report: RunReport,
         embed_service: Any,
         *,
+        model_identity: str = UNSTAMPED_MODEL_IDENTITY,
         provider: ProviderChoice | str = ProviderChoice.AUTO,
         batch_size: int = 64,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> SyncSummary:
         """Synchronize ingest report with vector store.
 
+        0. Refuses to write if the index disagrees with ``model_identity``.
         1. Purges removed chunk IDs from index.
         2. Detects new and modified chunks vs already indexed chunks.
         3. Generates embeddings for new/changed chunks only.
         4. Upserts new/changed records and updates FTS index.
         5. Returns a detailed SyncSummary.
+
+        ``model_identity`` identifies the embedding model whose vectors this run
+        will store, as ``schema.format_model_identity`` builds it. It is
+        supplied by the caller and never introspected off ``embed_service``:
+        ``EmbeddingService`` keeps its profile private and ``npu_rag.index``
+        must not reach into it.
+
+        It carries a default so that the one existing caller that predates
+        stamping keeps working, but the default cannot produce a mixed index:
+        step 0 rejects unstamped writes into a stamped table, and stamped
+        writes into an unstamped one, before a single row is touched. A caller
+        that never passes an identity therefore builds an index that is
+        *uniformly* unstamped and visibly so (``IndexStats.unstamped_chunks``),
+        never one that is quietly half of each.
         """
         t0 = time.perf_counter()
         if report is None:
             raise SyncError("Ingest report must not be None")
         if batch_size <= 0:
             raise SyncError("Batch size must be greater than zero")
+
+        # Step 0, deliberately outside the try below: a ConfigurationError here
+        # is a policy refusal and must reach the caller as itself, not wrapped
+        # into a SyncError that reads like an I/O failure. It runs before the
+        # purge as well as before the write - an incompatible run must not be
+        # able to delete rows it is not allowed to replace.
+        verify_model_identity(self._store, model_identity)
 
         if isinstance(provider, ProviderChoice):
             resolved_provider = provider
@@ -115,7 +143,9 @@ class IndexSynchronizer:
                 # 4. Convert and upsert to LanceDB
                 schema_records: list[ChunkSchema] = []
                 for record, vec in zip(chunks_to_embed, all_vectors):
-                    schema = chunk_record_to_schema(record, vec)
+                    schema = chunk_record_to_schema(
+                        record, vec, model_identity=model_identity
+                    )
                     schema_records.append(schema)
 
                 self._store.upsert(schema_records)

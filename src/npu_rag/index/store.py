@@ -9,7 +9,11 @@ import lancedb
 from lancedb.table import Table
 
 from npu_rag.index.errors import StoreError
-from npu_rag.index.schema import VECTOR_DIMENSION, ChunkSchema
+from npu_rag.index.schema import (
+    UNSTAMPED_MODEL_IDENTITY,
+    VECTOR_DIMENSION,
+    ChunkSchema,
+)
 from npu_rag.index.types import IndexStats
 
 
@@ -57,6 +61,46 @@ class LanceIndexStore:
             return len(self._table)
         except Exception as exc:
             raise StoreError(f"Failed to count records: {exc}") from exc
+
+    def model_identity_counts(self) -> dict[str, int]:
+        """Row count per recorded embedding-model identity.
+
+        Keys are the ``model_identity`` column verbatim, so rows that carry no
+        identity appear under ``UNSTAMPED_MODEL_IDENTITY`` (``""``) instead of
+        being dropped: a partially stamped table is exactly one of the mixed
+        cases this method exists to make visible. An empty table yields ``{}``.
+
+        Only the one column is read, so this stays cheap enough to call before
+        a sync or a search rather than being folded into :meth:`stats`, which
+        also walks the database directory to size it.
+
+        The scan carries **no limit, deliberately**. A plain (non-vector) query
+        in lancedb 0.38.0 returns every row - measured, including after FTS and
+        IVF_PQ indexes exist - so a limit would add nothing, and the obvious way
+        to write one (``len(table)`` then ``.limit(total)``) is a check-then-read
+        window: a table that grew between the two calls would be scanned short,
+        and the gate could then pass a *mixed* index because the second model's
+        rows fell outside the page. The unlimited scan cannot have that bug.
+
+        A table predating the ``model_identity`` column is reported as wholly
+        unstamped rather than raised on, so it reaches
+        ``compat.verify_model_identity``'s unstamped branch - whose message is
+        written for exactly this case and tells the operator to rebuild - and so
+        that :meth:`stats` keeps answering instead of failing a ``status``
+        report with what looks like corruption.
+        """
+        try:
+            if "model_identity" not in self._table.schema.names:
+                total = len(self._table)
+                return {UNSTAMPED_MODEL_IDENTITY: total} if total else {}
+            arrow = self._table.search().select(["model_identity"]).to_arrow()
+            counts: dict[str, int] = {}
+            for value in arrow["model_identity"].to_pylist():
+                key = value if isinstance(value, str) else UNSTAMPED_MODEL_IDENTITY
+                counts[key] = counts.get(key, 0) + 1
+            return counts
+        except Exception as exc:
+            raise StoreError(f"Failed to read embedding model identities: {exc}") from exc
 
     def add(self, records: Sequence[ChunkSchema | dict[str, Any]]) -> int:
         """Insert records into the table. Returns number of records added."""
@@ -168,12 +212,24 @@ class LanceIndexStore:
             except Exception:
                 has_fts = False
 
+            identity_counts = self.model_identity_counts()
+            model_identities = tuple(
+                sorted(
+                    identity
+                    for identity in identity_counts
+                    if identity != UNSTAMPED_MODEL_IDENTITY
+                )
+            )
+            unstamped_chunks = identity_counts.get(UNSTAMPED_MODEL_IDENTITY, 0)
+
             return IndexStats(
                 total_chunks=total_chunks,
                 total_documents=distinct_docs,
                 vector_dimension=VECTOR_DIMENSION,
                 has_fts_index=has_fts,
                 index_size_bytes=size_bytes,
+                model_identities=model_identities,
+                unstamped_chunks=unstamped_chunks,
             )
         except Exception as exc:
             raise StoreError(f"Failed to gather index stats: {exc}") from exc

@@ -69,18 +69,36 @@
 
 ## Phase 5: Ingest Synchronization & End-to-End Packaging
 
-- [ ] 5.1 Incremental Indexing Command
-  - Implement `cmd_index.py` connecting discovery, extraction, chunking, embedding, and `IndexSynchronizer`.
-  - Provide incremental sync by default and `--full-rebuild` flag.
-  - Render a dynamic console progress counter (files, chunks, throughput).
-  - Produce final summary report with files processed/skipped and omissions.
+> **5.1 SPLIT 2026-10-11.** The original single task exceeded the complexity caps below before a line was written: it spans two distinct seams — turning CLI configuration into a `RunReport`, and turning a `RunReport` into a synchronised index — each with its own failure modes, its own upstream package and its own tests. Splitting is the cap's prescribed remedy ("a sub-task that cannot fit is mis-sized — split it, do not grow it"). 5.1a is independently testable without any embedding model, which is what makes the split worth having.
+
+- [ ] 5.1a Ingest Half — config bridge, discovery-to-report, and the run summary
+  - Implement `src/npu_rag/cli/cmd_index.py` far enough to build an `IngestConfig` from `CliConfig`, run `run_ingest`, and render the summary. **No embedding, no index writes** — those are 5.1b.
+  - Register `add_arguments(parser)` per note 4.1's hook: `--archive-path`, `--full-rebuild`, `--provider`, `--json` (design §3.5). Extend `COMMAND_MODULES` and `COMMAND_SUMMARIES` together. Default any flag a config field also supplies to `None`, or requirement 2.1's lower layers are retired.
+  - Produce the requirement 7.5 summary: files added/updated/skipped, chunks created, **omissions by category**, total duration — in text and `--json`.
+  - *Files:* `src/npu_rag/cli/cmd_index.py`, `tests/cli/test_cli_index.py`, `src/npu_rag/cli/main.py`, `tests/cli/test_cli_baseline.py`
+  - _Requirements: 7.1-7.5, 8.3, 2.1_
+  - **The config bridge is the substance, and the two configs do not line up.** `IngestConfig` (`ingest/config.py:33`) requires `roots: tuple[Path, ...]` and **`token_budget: int`**; `CliConfig` has neither. `roots` is `(cfg.archive_path.resolve(),)` — resolved and absolute, per note 2.2. **`token_budget` has no configuration source and must not acquire one**: it has to equal the model's compiled sequence length, so it comes from `profile_for(cfg.model_name).max_input_tokens` (512 today). A `token_budget` that disagrees with `compiled_seq_len` silently produces chunks the runtime will truncate — the defect `npu-embedding-runtime` requirement 3.6 exists to prevent. Pin the derivation, not the number.
+  - `run_ingest(config, tokenizer, *, describer=None) -> RunReport` needs a real `ModelTokenizer` from `npu_rag.embedding.service.load_tokenizer(profile)`. That is a **tokenizer download, not a model compile** — cheap, and it does not need the NPU. Keep it out of module scope (requirement 1.2).
+  - Images: `describer=None` is correct and intended. Every `ImageRef` becomes a vision-unavailable omission naming the missing capability, which requirement 7.5's omissions-by-category must then report. That is the designed degradation, not a gap to paper over.
+  - _Depends: 4.1_
+
+- [ ] 5.1b Index Half — embed, synchronise, and report progress
+  - Extend `cmd_index.py` to build the embedding service, synchronise the `RunReport` into LanceDB, and render live progress.
+  - Incremental by default; `--full-rebuild` discards and rebuilds.
+  - Dynamic console counter: files, chunks, throughput (requirement 7.3).
   - *Files:* `src/npu_rag/cli/cmd_index.py`, `tests/cli/test_cli_index.py`
+  - _Requirements: 7.1-7.4, 6.1-6.3_
+  - **BINDING — pass `model_identity=` on every `VectorIndex.sync` call** (`vector-index` 8.2). Derive it exactly as the read path does: `format_model_identity(profile.model_id, profile.dimension)`. Omitting it is not an error *today* — it builds a uniformly unstamped index — but that index is then rejected by the first run that supplies one, and the only remedy is a full rebuild. 8.2 was done before this task precisely to avoid that.
+  - **BINDING — reuse `cmd_search.artifacts_root()`.** Re-deriving the path means every index run recompiles from scratch (~2953 s measured).
+  - **`sync()` takes `provider=` explicitly but surfaces no `fallback_reason`** (note 4.1), so 5.1b owns reporting a silent NPU→CPU fallback for indexing, the way `cmd_search` does for querying. Requirement 6.2 applies to every execution, not only to search.
+  - Progress callback is `Callable[[int, int], None]` on `VectorIndex.sync`. A counter that writes every chunk will dominate a 1343-document run; decide a throttle and pin it.
+  - _Depends: 5.1a, vector-index 8.2_
 
 - [ ] 5.2 End-to-End Validation & uvx Packaging
   - Validate end-to-end execution of `npu-rag index` followed by `npu-rag search` over a temporary corpus, asserting the searched text is actually retrieved.
   - Verify `uvx`-compatibility and `[project.scripts]` execution.
   - *Files:* `tests/cli/test_cli_e2e.py`
-  - _Depends: 4.1, 5.1_
+  - _Depends: 4.1, 5.1b_
   - **Split from the original 5.2 on 2026-10-11** (see 5.3). This half is the one that proves a first working release and carries no unmet dependency.
   - The index-then-search round trip is the first test to exercise embedding, storage and retrieval together. Budget for a cold first run: `build_service` (`service.py:647`) calls `ensure_prepared`, which acquires, exports and **compiles** on first use - measured at ~2953 s for an NPU compile during `npu-embedding-runtime`. A CI-shaped test must either run CPU-only or reuse a warm `artifacts/` directory; it must not silently skip, or it proves nothing.
 
@@ -147,3 +165,29 @@
 - 4.1: **a mutant that RUNS is not a mutant that is OBSERVED.** A 65-mutant sweep reported "0 survivors"; review then planted 28 and found **3 real** ones, all on lines the suite executed on every single test. The sweep had measured which lines the tests *reach*, not which properties they can *distinguish*. The three blind spots are reusable: `capsys` is UTF-8, so a bare `print` of Devanagari passes where a real console would crash (requirement 8.4 is unobservable through it - replace `sys.stdout` with a `TextIOWrapper(encoding="cp1252")`); `capsys` is never a TTY, so `render.should_colorize` vetoes on `isatty()` before `prefer_color` is ever read, making requirement 8.2's colour preference unobservable through output (record the call instead); and an ordering fixture whose insertion order coincides with sorted order cannot detect a dropped `sorted()`. **The second fixture was vacuous too** - `{alpha, zeta}` reversed *also* yields sorted order - and that was caught only by re-running the whole mutant table after the test edits, which is why unapplied/re-run accounting is mandatory, not optional.
 - 4.1: **`.gitignore` is pinned by `tests/ingest/test_package_baseline.py`, and the pin was pinning the wrong thing.** It required the literal entry `.npu_rag/ingest.sqlite`; widening that to the directory `.npu_rag/` on 2026-10-11 - strictly stronger - broke the test even though the property it guards had improved. Repaired to assert **coverage** (any entry equal to the path, or naming a directory containing it), proven non-vacuous by deleting the entry. Lesson: a pin that fails when its property is strengthened is pinning the spelling, not the property.
 - 4.1/FETCH_K RESOLVED 2026-10-11: `--fetch-k` is now implemented. `SearchOptions.fetch_k` landed upstream as `vector-index` task 8.1 (an amendment, since that spec's `design.md:118,122` already named `fetch_k` but left it hardcoded with no seam), and the flag maps straight to it. `None` is the default and keeps the engine's derived `max(limit*4, 30)`, so the CLI **must not** pre-compute the depth - doing so would look identical today and would freeze the engine's policy against future change. The earlier `test_fetch_k_is_not_offered_at_all` pin is inverted into `test_fetch_k_reaches_the_engine`. Requirement 5.1's flag surface is now complete at 18 options.
+
+---
+
+## Complexity Caps (standing, from 2026-10-11)
+
+Set by the owner after tasks 3.1 and 4.1 each produced ~1000 lines of production code, ~1600 lines of tests and 80+ mutants. The verification discipline found real defects every time and is **not** being weakened - what is capped is *volume*, so a task that needs more has to say so rather than drift there.
+
+**Per sub-task budget. Exceeding any line is not forbidden; it requires one sentence in the status report saying which cap and why.**
+
+| Cap | Limit |
+|---|---|
+| Production code | **≤ 400 lines** net new per sub-task |
+| Tests | **≤ 2x the production lines** |
+| Test count | **≤ 60** per sub-task |
+| Mutants | **≤ 25** planted, chosen for distinct *properties* rather than coverage of lines |
+| Review rounds | **≤ 2** before the task is split instead of remediated again |
+| Files touched | **≤ 4** (excluding `tasks.md`) |
+
+**Rules that come with the caps:**
+1. **A sub-task that cannot fit is mis-sized - split it, do not grow it.** Report `STATUS: NEEDS_CONTEXT` naming the split you propose.
+2. **Mutants are chosen per property, not per line.** 4.1's lesson stands: a 65-mutant sweep reported zero survivors while three real ones sat on lines every test executed. Twenty-five well-chosen mutants that each ask "can any assertion *distinguish* this?" beat eighty that ask "does this line run?".
+3. **The coverage surface is still mandatory** - properties probed AND properties not reached. The cap reduces the count, not the honesty.
+4. **Docstrings explaining a ruling stay.** They are why 2.1's and 3.1's deviations could be adjudicated instead of re-litigated. Prose that records a *decision* is not volume; prose that restates the code is.
+5. **One behaviour, one test.** Prefer a parameterized table over near-duplicate functions, and make every fixture's given order differ from its expected order (notes 2.2, 4.1).
+- 4.1/5.1b: **BINDING — `VectorIndex.search()` does NOT verify model identity implicitly.** Call `index.verify_model_identity(format_model_identity(profile.model_id, profile.dimension))` **before** any DENSE_ONLY or HYBRID query, and before a sync. Two reasons it is not automatic: a LEXICAL_ONLY query touches no vector and is legitimately model-free, and `npu_rag.index` cannot learn the configured identity on its own (`EmbeddingService` keeps its profile private, which is why the identity is a caller argument throughout). Deliberately *not* a `SearchOptions` field — that would widen the options surface and put a column scan on every query. Raised by review as the one 8.2 obligation recorded only in a docstring; recorded here so 4.1's wiring and 5.1b both see it.
+- 8.2 lesson, applies to every task: **a mutant surviving is evidence; a comment asserting why a line is needed is not.** Two of 8.2's justifications were factually wrong and only mutation caught them. (a) `.limit(total)` on a LanceDB scan was documented as load-bearing against "a default limit"; removing it entirely **survived all 90 index tests**, and an unlimited scan returns every row (42/42 and 2000/2000 measured). It was belt-and-braces, and the `len()`-then-`limit()` pair it introduced is a check-then-read window the unlimited scan does not have. (b) A removed guard was documented as **dead**; reinstating it with a probe message proved it **executes** — it was *redundant*, subsumed by a later term. Both removals were still right; both reasons were wrong. **Verify a justification by trying to falsify it, not by reading it.**

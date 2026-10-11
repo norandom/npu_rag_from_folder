@@ -11,8 +11,8 @@ import numpy.typing as npt
 import pytest
 
 from npu_rag.embedding.types import DocumentText, ExecutionMode, ProviderChoice
-from npu_rag.index.errors import SyncError
-from npu_rag.index.schema import VECTOR_DIMENSION
+from npu_rag.index.errors import ConfigurationError, SyncError
+from npu_rag.index.schema import UNSTAMPED_MODEL_IDENTITY, VECTOR_DIMENSION
 from npu_rag.index.store import LanceIndexStore
 from npu_rag.index.sync import IndexSynchronizer
 from npu_rag.ingest.types import (
@@ -229,3 +229,185 @@ def test_sync_validation_and_errors(tmp_path: Path) -> None:
 
     with pytest.raises(SyncError, match="Batch size must be greater than zero"):
         sync.sync(_make_report(), embed_service, batch_size=0)
+
+
+# ---------------------------------------------------------------------------
+# Embedding-model identity (vector-index task 8.2)
+#
+# Two genuinely different identities, both 768-d, written as literals: the
+# failure being guarded is a same-dimension model swap, which no dimension
+# check and no `True`-by-construction comparison can catch.
+# ---------------------------------------------------------------------------
+
+MODEL_A = "google/embeddinggemma-300m:768"
+MODEL_B = "google/embeddinggemma-2-300m:768"
+
+
+def test_sync_stamps_every_row_with_the_supplied_identity(tmp_path: Path) -> None:
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+
+    records = [
+        _make_ingest_chunk("c1", text="First"),
+        _make_ingest_chunk("c2", text="Second", ordinal=1),
+    ]
+    sync.sync(_make_report(records=records), FakeEmbeddingService(), model_identity=MODEL_A)
+
+    assert store.model_identity_counts() == {MODEL_A: 2}
+    assert store.stats().unstamped_chunks == 0
+
+
+def test_sync_without_an_identity_leaves_rows_unstamped(tmp_path: Path) -> None:
+    """The default is the sentinel, uniformly - never half-stamped."""
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+
+    sync.sync(_make_report(records=[_make_ingest_chunk("c1")]), FakeEmbeddingService())
+
+    assert store.model_identity_counts() == {UNSTAMPED_MODEL_IDENTITY: 1}
+    stats = store.stats()
+    assert stats.model_identities == ()
+    assert stats.unstamped_chunks == 1
+    assert stats.is_mixed_model is False
+
+
+def test_sync_refuses_a_second_model_over_an_existing_index(tmp_path: Path) -> None:
+    """The failure this task exists to prevent, end to end through sync."""
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    sync.sync(
+        _make_report(records=[_make_ingest_chunk("c1", text="First")]),
+        embed_service,
+        model_identity=MODEL_A,
+    )
+    calls_after_first = embed_service.call_count
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        sync.sync(
+            _make_report(records=[_make_ingest_chunk("c2", text="Second")]),
+            embed_service,
+            model_identity=MODEL_B,
+        )
+
+    message = str(excinfo.value)
+    assert MODEL_A in message
+    assert MODEL_B in message
+    # Nothing was embedded, nothing was written: the refusal precedes the work.
+    assert embed_service.call_count == calls_after_first
+    assert store.model_identity_counts() == {MODEL_A: 1}
+    assert store.count() == 1
+
+
+def test_sync_refusal_happens_before_the_purge(tmp_path: Path) -> None:
+    """An incompatible run must not delete rows it is not allowed to replace."""
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    sync.sync(
+        _make_report(records=[_make_ingest_chunk("c1"), _make_ingest_chunk("c2", ordinal=1)]),
+        embed_service,
+        model_identity=MODEL_A,
+    )
+    assert store.count() == 2
+
+    with pytest.raises(ConfigurationError):
+        sync.sync(
+            _make_report(records=[], removed_chunk_ids=["c1"]),
+            embed_service,
+            model_identity=MODEL_B,
+        )
+
+    assert store.count() == 2
+    assert store.table.search().where("chunk_id = 'c1'").to_list() != []
+
+
+def test_sync_refuses_an_unstamped_run_over_a_stamped_index(tmp_path: Path) -> None:
+    """So the default argument can never produce a half-stamped table."""
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    sync.sync(
+        _make_report(records=[_make_ingest_chunk("c1")]),
+        embed_service,
+        model_identity=MODEL_A,
+    )
+    with pytest.raises(ConfigurationError, match="supplied no embedding-model identity"):
+        sync.sync(
+            _make_report(records=[_make_ingest_chunk("c2", ordinal=1)]),
+            embed_service,
+        )
+    assert store.model_identity_counts() == {MODEL_A: 1}
+
+
+def test_sync_refuses_a_stamped_run_over_an_unstamped_index(tmp_path: Path) -> None:
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    sync.sync(_make_report(records=[_make_ingest_chunk("c1")]), embed_service)
+    with pytest.raises(ConfigurationError, match="no recorded"):
+        sync.sync(
+            _make_report(records=[_make_ingest_chunk("c2", ordinal=1)]),
+            embed_service,
+            model_identity=MODEL_A,
+        )
+    assert store.model_identity_counts() == {UNSTAMPED_MODEL_IDENTITY: 1}
+
+
+def test_sync_refusal_is_not_wrapped_into_a_sync_error(tmp_path: Path) -> None:
+    """A policy refusal must not arrive looking like an I/O failure."""
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    sync.sync(
+        _make_report(records=[_make_ingest_chunk("c1")]),
+        embed_service,
+        model_identity=MODEL_A,
+    )
+    with pytest.raises(ConfigurationError) as excinfo:
+        sync.sync(_make_report(records=[]), embed_service, model_identity=MODEL_B)
+    assert not isinstance(excinfo.value, SyncError)
+
+
+def test_resync_with_the_same_identity_still_reuses_the_index(tmp_path: Path) -> None:
+    """The check must not make an incremental re-run re-embed anything."""
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    report = _make_report(records=[_make_ingest_chunk("c1"), _make_ingest_chunk("c2", ordinal=1)])
+    sync.sync(report, embed_service, model_identity=MODEL_A)
+    assert embed_service.call_count == 1
+
+    summary = sync.sync(report, embed_service, model_identity=MODEL_A)
+    assert embed_service.call_count == 1
+    assert summary.chunks_added == 0
+    assert summary.chunks_updated == 0
+    assert store.model_identity_counts() == {MODEL_A: 2}
+
+
+def test_updated_chunks_keep_the_stamp(tmp_path: Path) -> None:
+    store = LanceIndexStore(tmp_path / "lancedb_sync")
+    sync = IndexSynchronizer(store)
+    embed_service = FakeEmbeddingService()
+
+    sync.sync(
+        _make_report(records=[_make_ingest_chunk("c1", text="Initial text")]),
+        embed_service,
+        model_identity=MODEL_A,
+    )
+    sync.sync(
+        _make_report(records=[_make_ingest_chunk("c1", text="Edited text")]),
+        embed_service,
+        model_identity=MODEL_A,
+    )
+
+    rows = store.table.search().where("chunk_id = 'c1'").to_list()
+    assert len(rows) == 1
+    assert rows[0]["text"] == "Edited text"
+    assert rows[0]["model_identity"] == MODEL_A

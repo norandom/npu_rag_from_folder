@@ -124,6 +124,11 @@ def test_index_stats() -> None:
     assert stats.total_chunks == 1000
     assert stats.vector_dimension == 768
     assert stats.has_fts_index is True
+    # The embedding-model identity fields default, so the five original
+    # positional fields still construct an IndexStats (task 8.2).
+    assert stats.model_identities == ()
+    assert stats.unstamped_chunks == 0
+    assert stats.is_mixed_model is False
 
 
 def test_error_taxonomy() -> None:

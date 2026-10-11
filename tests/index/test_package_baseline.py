@@ -29,7 +29,7 @@ LAYER_ORDER: tuple[tuple[str, ...], ...] = (
     ("types", "errors"),
     ("schema",),
     ("store",),
-    ("retriever", "fusion", "diversity", "expansion", "rerank"),
+    ("retriever", "fusion", "diversity", "expansion", "rerank", "compat"),
     ("sync",),
     ("service",),
 )
