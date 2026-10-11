@@ -83,6 +83,7 @@ EXPECTED_OPTIONS: tuple[str, ...] = (
     "--max-chunks-per-doc",
     "--rollup",
     "--top-k",
+    "--fetch-k",
     "--filter",
     "--provider",
     "--json",
@@ -439,12 +440,70 @@ def test_search_registers_exactly_the_designed_flags() -> None:
     )
 
 
-def test_fetch_k_is_not_offered_at_all() -> None:
-    """A flag that cannot reach the engine must not be advertised."""
+def test_fetch_k_reaches_the_engine() -> None:
+    """Requirement 5.1's `--fetch-k`, honoured rather than advertised and ignored.
+
+    This test replaced `test_fetch_k_is_not_offered_at_all`, which pinned the
+    flag's deliberate *absence* while `SearchOptions` had no field to carry it.
+    The field landed in `vector-index` on 2026-10-11, so the flag is now real
+    and the pin is inverted: the engine must expose somewhere for the value to
+    go, and the parser must offer it.
+    """
     from npu_rag.index.types import SearchOptions
 
-    assert not hasattr(SearchOptions(), "fetch_k")
-    assert "--fetch-k" not in _registered_options(_search_parser())
+    assert hasattr(SearchOptions(), "fetch_k")
+    assert SearchOptions().fetch_k is None, (
+        "the default must stay None so the index keeps its derived depth and "
+        "no existing caller changes behaviour"
+    )
+    assert "--fetch-k" in _registered_options(_search_parser())
+
+
+def test_fetch_k_is_passed_through_to_the_engine(tmp_path: Path) -> None:
+    """A named depth arrives at `SearchOptions.fetch_k` verbatim."""
+    index = FakeIndex(make_response())
+    assert (
+        run_search(
+            "a query",
+            "--fetch-k",
+            "7",
+            config=make_config(tmp_path),
+            index=index,
+            embedder=FakeEmbedder(),
+        )
+        == EXIT_OK
+    )
+    assert index.calls[0].options.fetch_k == 7
+
+
+def test_an_unset_fetch_k_stays_none_rather_than_a_computed_number(
+    tmp_path: Path,
+) -> None:
+    """The CLI must not pre-compute the depth and hand the engine a constant.
+
+    Passing `max(limit * 4, 30)` from here would look identical today and would
+    silently freeze the engine's own policy, so a later change to that formula
+    would stop reaching anyone who went through the CLI.
+    """
+    index = FakeIndex(make_response())
+    assert (
+        run_search(
+            "a query",
+            config=make_config(tmp_path),
+            index=index,
+            embedder=FakeEmbedder(),
+        )
+        == EXIT_OK
+    )
+    assert index.calls[0].options.fetch_k is None
+
+
+# `--fetch-k`'s rejected and accepted values live in the two parametrized
+# tables above, beside every other numeric flag, rather than in a test of their
+# own: validation happens at *parse* time via argparse `type=`, so it is
+# reachable only through `main()`. `run_search` builds its namespace directly
+# and bypasses the parser, which is why an invalid value raises there instead of
+# returning exit 1.
 
 
 def test_query_is_required() -> None:
@@ -527,6 +586,10 @@ def test_choice_flags_reject_anything_else(flag: str, value: str) -> None:
         ("--top-k", "-1"),
         ("--top-k", "2.5"),
         ("--top-k", "many"),
+        ("--fetch-k", "0"),
+        ("--fetch-k", "-1"),
+        ("--fetch-k", "2.5"),
+        ("--fetch-k", "many"),
         ("--rrf-k", "0"),
         ("--rrf-k", "-60"),
         ("--max-chunks-per-doc", "0"),
@@ -556,6 +619,7 @@ def test_out_of_range_numbers_are_rejected_at_parse_time(
     ("flag", "value", "expected"),
     [
         ("--top-k", "1", 1),
+        ("--fetch-k", "1", 1),
         ("--rrf-k", "1", 1),
         ("--max-chunks-per-doc", "1", 1),
         ("--context", "0", 0),

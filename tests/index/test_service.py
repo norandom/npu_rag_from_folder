@@ -264,3 +264,93 @@ def test_index_stats(populated_index: tuple[VectorIndex, MockEmbeddingService]) 
     assert isinstance(stats, IndexStats)
     assert stats.total_chunks == 3
     assert stats.total_documents == 2
+
+
+# --------------------------------------------------------------------------
+# Candidate depth (`SearchOptions.fetch_k`)
+#
+# design.md section 3 already wrote `fetch_k` into the retrieval pseudocode
+# (lines 118 and 122), but the implementation hardcoded `max(limit * 4, 30)`
+# with no seam, so `search-cli`'s `--fetch-k` flag had nowhere to go and was
+# omitted. The field was added on 2026-10-11 to close that gap.
+# --------------------------------------------------------------------------
+
+
+class _DepthRecorder:
+    """Stands in for a retriever and records the candidate depth asked for."""
+
+    def __init__(self) -> None:
+        self.limits: list[int] = []
+
+    def retrieve(self, *args: Any, limit: int, **kwargs: Any) -> list[SearchResult]:
+        self.limits.append(limit)
+        return []
+
+
+def _recorded_depths(
+    index: VectorIndex, options: SearchOptions
+) -> tuple[list[int], list[int]]:
+    dense = _DepthRecorder()
+    lexical = _DepthRecorder()
+    index._dense_retriever = dense  # type: ignore[assignment]
+    index._lexical_retriever = lexical  # type: ignore[assignment]
+    index.search("query", options=options)
+    return dense.limits, lexical.limits
+
+
+def test_an_unset_fetch_k_keeps_the_derived_depth(
+    populated_index: tuple[VectorIndex, MockEmbeddingService],
+) -> None:
+    """`None` must reproduce exactly what every caller got before the field existed.
+
+    Both arms of `max(limit * 4, 30)` are checked, because a mutant that drops
+    either one still satisfies the other: limit 10 exercises the floor (40 > 30
+    would hide it) and limit 2 exercises the product.
+    """
+    index, _ = populated_index
+
+    dense, _lex = _recorded_depths(index, SearchOptions(limit=10, mode=SearchMode.DENSE_ONLY))
+    assert dense == [40], "limit * 4 must win when it exceeds the floor"
+
+    dense, _lex = _recorded_depths(index, SearchOptions(limit=2, mode=SearchMode.DENSE_ONLY))
+    assert dense == [30], "the floor of 30 must win when limit * 4 is smaller"
+
+
+def test_an_explicit_fetch_k_is_honoured_verbatim(
+    populated_index: tuple[VectorIndex, MockEmbeddingService],
+) -> None:
+    """The named depth reaches the retriever unchanged, in every mode."""
+    index, _ = populated_index
+
+    dense, _lex = _recorded_depths(index, SearchOptions(limit=10, fetch_k=7, mode=SearchMode.DENSE_ONLY))
+    assert dense == [7]
+
+    _dense, lexical = _recorded_depths(index, SearchOptions(limit=10, fetch_k=7, mode=SearchMode.LEXICAL_ONLY))
+    assert lexical == [7]
+
+    dense, lexical = _recorded_depths(index, SearchOptions(limit=10, fetch_k=7, mode=SearchMode.HYBRID))
+    assert dense == [7] and lexical == [7], "hybrid must use one depth for both arms"
+
+
+def test_an_explicit_fetch_k_is_not_widened_by_the_floor(
+    populated_index: tuple[VectorIndex, MockEmbeddingService],
+) -> None:
+    """A deliberately narrow pool stays narrow.
+
+    `max(30, fetch_k)` would look correct against every value above 30 and would
+    quietly turn the parameter into a suggestion. A caller asking for 3 on a
+    large index means 3.
+    """
+    index, _ = populated_index
+    dense, _lex = _recorded_depths(index, SearchOptions(limit=10, fetch_k=3, mode=SearchMode.DENSE_ONLY))
+    assert dense == [3]
+
+
+def test_fetch_k_is_independent_of_limit(
+    populated_index: tuple[VectorIndex, MockEmbeddingService],
+) -> None:
+    """A control: the depth must not be derived from `limit` once it is named."""
+    index, _ = populated_index
+    first, _lex = _recorded_depths(index, SearchOptions(limit=1, fetch_k=25, mode=SearchMode.DENSE_ONLY))
+    second, _lex2 = _recorded_depths(index, SearchOptions(limit=50, fetch_k=25, mode=SearchMode.DENSE_ONLY))
+    assert first == second == [25]

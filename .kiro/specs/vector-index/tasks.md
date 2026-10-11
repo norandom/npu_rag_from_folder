@@ -123,3 +123,18 @@
   - Observable: hybrid search retrieves documents that both dense-only and lexical-only fail to rank at top; incremental re-run reuses index completely
   - _Requirements: 1.1, 2.1, 3.1, 4.2, 5.2, 6.1, 7.1, 8.1_
   - _Boundary: validation_
+
+---
+
+## Follow-on (post-closure amendments)
+
+- [x] 8.1 Make the retrieval candidate depth configurable (`SearchOptions.fetch_k`)
+  - Add `fetch_k: int | None = None` to `SearchOptions`; honour it in `VectorIndex.search`, falling back to the derived `max(limit * 4, 30)` when `None`.
+  - *Files:* `src/npu_rag/index/types.py`, `src/npu_rag/index/service.py`, `tests/index/test_service.py`
+  - **Why this is an amendment and not a new feature.** `design.md` section 3 already writes `fetch_k` into the retrieval pseudocode (lines 118 and 122), but the implementation computed it inline at `service.py:142` with **no seam** - no subclass, property or keyword could reach it. `search-cli`'s requirement 5.1 lists a `--fetch-k` flag, so task 4.1 there had a choice between advertising a flag that silently did nothing and patching this closed spec. It did neither: it omitted the flag, pinned the omission with a test, and routed the gap here. This closes it.
+  - **Compatibility.** `None` is the default and reproduces the previous behaviour exactly, so no existing caller changes. The floor of 30 is deliberately **not** applied to an explicit value: `max(30, fetch_k)` would look correct for every value above 30 and would quietly turn the parameter into a suggestion, when a caller asking for a pool of 3 on a large index means 3.
+  - Implemented 2026-10-11. Five mutants planted and all killed (ignore the field entirely; apply the floor to an explicit value; drop the floor; drop the product; test falsiness rather than `None`, which would silently reinterpret a programmatic `fetch_k=0`), each restored and SHA256-verified. Both arms of the derived default are asserted separately, since a mutant dropping either one still satisfies the other.
+
+### Known gap, not yet scheduled
+
+- **The index records no embedding-model identity.** `ChunkSchema` has no `model_id`/`model_name` column, and `VECTOR_DIMENSION` is a module constant. A *dimension* change fails at write time, but a **same-dimension different model does not**: EmbeddingGemma 2 is also 768-d, so repointing `model_name` at it over an existing index would silently produce one table holding two incompatible vector spaces - no error, no way to tell the rows apart afterwards, and every cross-boundary similarity score meaningless but plausible. A `model_id` column or a sidecar manifest is a precondition for any model migration. Raised 2026-10-11 during `search-cli` 4.2 preflight.

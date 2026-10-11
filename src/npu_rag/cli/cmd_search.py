@@ -519,6 +519,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "default_limit, which is 10 unless set."
         ),
     )
+    retrieval.add_argument(
+        "--fetch-k",
+        type=_positive_int,
+        metavar="<n>",
+        help=(
+            "How many candidates to retrieve before fusion, diversity and "
+            "truncation. Defaults to max(top-k * 4, 30). Raise it when a "
+            "relevant chunk is being squeezed out of the candidate pool; "
+            "lower it to trade recall for speed on a large index."
+        ),
+    )
 
     execution = parser.add_argument_group("execution")
     execution.add_argument(
@@ -792,6 +803,9 @@ def _build_options(
         max_chunks_per_document=args.max_chunks_per_doc,
         document_rollup=args.rollup,
         context_window=args.context,
+        # `None` is meaningful, not a missing value: it asks the index to keep
+        # its derived default (`max(limit * 4, 30)`) rather than naming a depth.
+        fetch_k=args.fetch_k,
     )
 
 

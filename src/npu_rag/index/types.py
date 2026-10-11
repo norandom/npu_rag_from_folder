@@ -46,6 +46,14 @@ class SearchOptions:
     max_chunks_per_document: int | None = None
     document_rollup: bool = False
     context_window: int = 0
+    #: Candidate depth to retrieve before fusion, MMR, rollup and truncation.
+    #: ``None`` keeps the derived default (``max(limit * 4, 30)``), which is what
+    #: every caller got before this field existed, so adding it changes no
+    #: existing behaviour. Set it to widen the pool when recall matters more
+    #: than latency, or to narrow it on a large index. design.md already wrote
+    #: ``fetch_k`` into the retrieval pseudocode (section 3, lines 118 and 122);
+    #: this makes the value a caller's choice rather than a hidden constant.
+    fetch_k: int | None = None
 
 
 @dataclass(frozen=True)

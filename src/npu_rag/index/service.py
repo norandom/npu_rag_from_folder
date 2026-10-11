@@ -139,7 +139,14 @@ class VectorIndex:
 
         # Over-fetch candidates to ensure downstream stages (fusion, MMR, rollup)
         # have adequate candidate depth before final truncation.
-        fetch_k = max(opts.limit * 4, 30)
+        #
+        # An explicit `fetch_k` wins; `None` keeps the derived default, so a
+        # caller that never sets it sees exactly the behaviour this line had
+        # before the field existed. The floor of 30 is deliberately NOT applied
+        # to an explicit value: a caller asking for a narrow pool on a large
+        # index means it, and silently widening the request would make the
+        # parameter a suggestion rather than a setting.
+        fetch_k = opts.fetch_k if opts.fetch_k is not None else max(opts.limit * 4, 30)
 
         # 1. Retrieval
         candidates: list[SearchResult] = []
