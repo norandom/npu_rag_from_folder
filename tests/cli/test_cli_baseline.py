@@ -293,10 +293,11 @@ def test_fast_paths_import_no_heavy_module(tmp_path: Path) -> None:
         "the startup path imported a module requirement 1.2 forbids: "
         f"{payload['heavy']}"
     )
-    # No handler module may be imported by a path that did not invoke it. Today
-    # no `cmd_*.py` exists, so this is future-proofing: once task 4.1 lands
-    # `cmd_search.py`, an eager import in `build_parser()` would otherwise be
-    # silent - it would cost startup time without failing anything.
+    # No handler module may be imported by a path that did not invoke it. Since
+    # task 4.1 this is load-bearing rather than future-proofing: `cmd_search.py`
+    # exists and `build_parser` consults it for its flags, so an eager import -
+    # registering every command's arguments instead of the one in `argv` - would
+    # otherwise be silent, costing startup time without failing anything.
     eager = [name for name in payload["cli_modules"] if name.startswith("npu_rag.cli.cmd_")]
     assert eager == [], f"a handler module was imported without being invoked: {eager}"
     # Non-vacuity control for the line above: the probe really does observe the
@@ -552,6 +553,241 @@ def test_keyboard_interrupt_in_a_handler_is_a_runtime_exit_not_a_traceback(
 
     assert main_module.main(["index"]) == main_module.EXIT_RUNTIME
     assert capsys.readouterr().err.strip() != ""
+
+
+# --------------------------------------------------------------------------- #
+# Lazy argument registration (task 4.1's amended boundary)
+# --------------------------------------------------------------------------- #
+#
+# `build_parser` asks the handler module of the command named in `argv` - and of
+# no other - to register its own flags. The property that has to hold is a
+# conjunction: the flags must actually appear, AND the four modules that were
+# not asked for must stay unimported, AND requirement 1.2's fast paths must
+# still import none at all. Each half is pinned separately below, because
+# either one alone is satisfiable by code that breaks the other: registering
+# everything eagerly satisfies the first, and registering nothing satisfies the
+# second.
+
+
+def _stub_command_module(
+    monkeypatch: pytest.MonkeyPatch, command: str, calls: list[str]
+) -> None:
+    """Plant a handler module for `command` that records its registration."""
+    from npu_rag.cli.main import COMMAND_MODULES
+
+    module_name = COMMAND_MODULES[command]
+    stub = types.ModuleType(module_name)
+
+    def add_arguments(parser: argparse.ArgumentParser) -> None:
+        calls.append(command)
+        parser.add_argument(f"--{command}-only", action="store_true")
+
+    def run(args: argparse.Namespace) -> int:
+        return 0
+
+    setattr(stub, "add_arguments", add_arguments)
+    setattr(stub, "run", run)
+    monkeypatch.setitem(sys.modules, module_name, stub)
+
+
+def test_arguments_hook_attribute_is_the_documented_name() -> None:
+    """Pinned against a literal: `cmd_*` modules are written against this name."""
+    from npu_rag.cli.main import ARGUMENTS_ATTR
+
+    assert ARGUMENTS_ATTR == "add_arguments"
+
+
+@pytest.mark.parametrize("command", EXPECTED_SUBCOMMANDS)
+def test_only_the_command_named_in_argv_registers_its_arguments(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    from npu_rag.cli.main import build_parser
+
+    calls: list[str] = []
+    for name in EXPECTED_SUBCOMMANDS:
+        _stub_command_module(monkeypatch, name, calls)
+
+    build_parser([command, "whatever"])
+    assert calls == [command]
+
+
+def test_a_positional_that_names_another_command_is_not_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`npu-rag search index` searches for "index"; it does not run `index`."""
+    from npu_rag.cli.main import build_parser
+
+    calls: list[str] = []
+    for name in EXPECTED_SUBCOMMANDS:
+        _stub_command_module(monkeypatch, name, calls)
+
+    build_parser(["search", "index", "--json"])
+    assert calls == ["search"]
+
+
+@pytest.mark.parametrize("argv", [[], ["--help"], ["--version"], ["no-such-command"]])
+def test_the_fast_paths_register_no_arguments_at_all(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
+    from npu_rag.cli.main import build_parser
+
+    calls: list[str] = []
+    for name in EXPECTED_SUBCOMMANDS:
+        _stub_command_module(monkeypatch, name, calls)
+
+    build_parser(argv)
+    assert calls == []
+
+
+def test_build_parser_without_argv_registers_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-argv form is the shape every structural test above uses."""
+    from npu_rag.cli.main import build_parser
+
+    calls: list[str] = []
+    for name in EXPECTED_SUBCOMMANDS:
+        _stub_command_module(monkeypatch, name, calls)
+
+    build_parser()
+    assert calls == []
+
+
+def test_a_registered_flag_actually_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-vacuity control: the hook's effect is observable through parsing."""
+    from npu_rag.cli.main import build_parser
+
+    calls: list[str] = []
+    _stub_command_module(monkeypatch, "status", calls)
+
+    argv = ["status", "--status-only"]
+    args = build_parser(argv).parse_args(argv)
+    assert args.status_only is True
+    assert args.command == "status"
+
+
+def test_a_handler_without_the_hook_keeps_a_bare_subparser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 5.3 depends on this: `benchmark` must stay as it was."""
+    from npu_rag.cli import main as main_module
+
+    stub = types.ModuleType(main_module.COMMAND_MODULES["status"])
+    setattr(stub, "run", lambda args: 0)
+    monkeypatch.setitem(sys.modules, main_module.COMMAND_MODULES["status"], stub)
+
+    argv = ["status"]
+    assert main_module.build_parser(argv).parse_args(argv).command == "status"
+    assert main_module.main(["status", "--not-a-flag"]) == main_module.EXIT_USAGE
+
+
+def test_a_non_callable_arguments_hook_is_ignored_rather_than_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`add_arguments` present but not callable must not be invoked.
+
+    The same shape was found by mutation against `HANDLER_ATTR` in task 1.1:
+    `getattr` succeeds, so a check for `None` alone would call an integer and
+    hand the user a `TypeError` traceback - here before parsing has even begun,
+    which is the worst place for one.
+    """
+    from npu_rag.cli import main as main_module
+
+    stub = types.ModuleType(main_module.COMMAND_MODULES["tags"])
+    setattr(stub, "add_arguments", 42)
+    setattr(stub, "run", lambda args: 0)
+    monkeypatch.setitem(sys.modules, main_module.COMMAND_MODULES["tags"], stub)
+
+    argv = ["tags"]
+    assert main_module.build_parser(argv).parse_args(argv).command == "tags"
+    assert main_module.main(argv) == 0
+
+
+def test_a_genuine_import_error_during_registration_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registration must not hide a missing dependency any more than dispatch does.
+
+    Asserted against `build_parser` specifically, and not through `main`: with
+    the guard removed, `dispatch` would raise the same error a moment later, so
+    only the earlier call site can tell the two apart.
+    """
+    from npu_rag.cli import main as main_module
+
+    def exploding_import(name: str) -> types.ModuleType:
+        raise ModuleNotFoundError(
+            "No module named 'some_absent_dependency'", name="some_absent_dependency"
+        )
+
+    monkeypatch.setattr(main_module, "import_module", exploding_import)
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        main_module.build_parser(["search", "a query"])
+    assert excinfo.value.name == "some_absent_dependency"
+
+
+def test_an_absent_handler_module_during_registration_is_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control for the test above: the handler's *own* absence is not an error
+    here - `dispatch` owns that diagnostic, after parsing."""
+    from npu_rag.cli import main as main_module
+
+    def missing_import(name: str) -> types.ModuleType:
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(main_module, "import_module", missing_import)
+    argv = ["status"]
+    parser = main_module.build_parser(argv)
+    assert parser.parse_args(argv).command == "status"
+    assert _registered_subcommands(parser) == EXPECTED_SUBCOMMANDS
+
+
+def test_an_absent_handler_module_still_parses_and_then_exits_two() -> None:
+    """`benchmark` has no module at all, so the hook must be a no-op for it.
+
+    Task 5.3 is blocked and this is the honest behaviour it is blocked at: the
+    diagnostic comes from `dispatch`, after parsing, and is a runtime error.
+    """
+    completed = _run_cli("benchmark")
+    assert completed.returncode == 2
+    assert "npu_rag.cli.cmd_benchmark" in completed.stderr
+    assert completed.stdout == ""
+    assert "Traceback" not in completed.stderr
+
+
+def test_search_help_lists_the_commands_own_flags() -> None:
+    """The user-visible consequence of the hook (design §3.5)."""
+    completed = _run_cli("search", "--help")
+    assert completed.returncode == 0
+    for flag in ("--folder", "--tag", "--group-by-folder", "--top-k", "--provider"):
+        assert flag in completed.stdout, f"{flag} missing from `search --help`"
+    assert completed.stderr == ""
+
+
+def test_search_help_imports_the_handler_but_nothing_heavy(tmp_path: Path) -> None:
+    """Requirement 1.2 covers `npu-rag search --help` too.
+
+    The handler module has to be imported for its flags to exist, so the
+    guarantee for this path is narrower than for the fast paths and is stated
+    separately: `cmd_search` is present, and `lancedb`, `onnxruntime`, `torch`
+    and `transformers` are not.
+    """
+    payload = _run_probe(
+        tmp_path,
+        body=(
+            "from npu_rag.cli.main import main\n"
+            'payload["code"] = main(["search", "--help"])\n'
+        ),
+        name="search_help",
+    )
+    assert payload["code"] == 0
+    assert payload["heavy"] == [], (
+        f"`search --help` imported a forbidden module: {payload['heavy']}"
+    )
+    assert "npu_rag.cli.cmd_search" in payload["cli_modules"], (
+        "the flags cannot have been registered without importing the handler"
+    )
+    assert "--top-k" in payload["stdout"]
 
 
 def test_handler_return_code_is_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:

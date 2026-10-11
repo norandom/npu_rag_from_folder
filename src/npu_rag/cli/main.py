@@ -22,6 +22,15 @@ stay distinguishable to a caller.
 Command handlers are not implemented here. Each `cmd_<name>.py` module is
 expected to expose `run(args: argparse.Namespace) -> int`; until the module
 exists, invoking its subcommand reports a runtime error rather than crashing.
+
+**A command owns its own flags, and pays for them only when it is used.** A
+subcommand's options are registered by its handler module through
+`ARGUMENTS_ATTR` (`add_arguments(parser)`), which `build_parser` calls for the
+single command named in `argv` and for no other. Design §3.5 gives `search`
+eighteen options; registering all five commands' surfaces here would both
+contradict that ownership and import every handler module on every
+invocation, which is precisely what requirement 1.2 forbids. A module that
+exposes no `add_arguments` is unaffected and its subparser stays bare.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 __all__ = [
+    "ARGUMENTS_ATTR",
     "COMMAND_MODULES",
     "EXIT_OK",
     "EXIT_RUNTIME",
@@ -82,6 +92,15 @@ COMMAND_SUMMARIES: Final[dict[str, str]] = {
 
 #: The callable every `cmd_<name>.py` module must expose.
 HANDLER_ATTR: Final = "run"
+
+#: The optional callable a `cmd_<name>.py` module may expose to register its
+#: own flags: `add_arguments(parser) -> None`. Consulted by `build_parser` for
+#: the ONE command present in `argv` and never for the others - see
+#: `_registered_command` for why that restriction is requirement 1.2 and not an
+#: optimisation. A module without it keeps working exactly as before: its
+#: subparser takes no arguments, which is what `benchmark` (blocked, task 5.3)
+#: still relies on.
+ARGUMENTS_ATTR: Final = "add_arguments"
 
 
 def resolve_version() -> str:
@@ -145,12 +164,65 @@ class _VersionAction(argparse.Action):
         raise SystemExit(EXIT_OK)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _registered_command(argv: Sequence[str]) -> str | None:
+    """The subcommand `argv` names, if it names one of ours.
+
+    The first token that is not an option is the candidate: the top-level
+    parser takes only `--version`, which consumes no value, so nothing else can
+    occupy that position. A token that is not one of the five commands yields
+    `None`, which is what keeps requirement 1.2's fast paths free: `--help`,
+    `--version`, a bare invocation and a mistyped command all resolve to
+    `None`, and no `cmd_*` module is imported for any of them.
+
+    Everything after the command belongs to the command, so a query that
+    happens to read `index` cannot be mistaken for one - the first non-option
+    token has already been claimed.
+    """
+    for token in argv:
+        if token.startswith("-"):
+            continue
+        return token if token in COMMAND_MODULES else None
+    return None
+
+
+def _register_arguments(parser: argparse.ArgumentParser, command: str) -> None:
+    """Let `command`'s handler module register its own flags, if it can.
+
+    Three outcomes, all deliberate. The module exposes `ARGUMENTS_ATTR` and it
+    is called. The module exists without it - the subparser stays bare, which
+    is exactly the behaviour every command had before this hook. The module
+    does not exist at all - nothing happens here, and `dispatch()` reports the
+    missing handler as a runtime error after parsing, which is where that
+    diagnostic has always come from.
+
+    A `ModuleNotFoundError` naming something *other* than the handler module is
+    re-raised, for the same reason `dispatch()` re-raises it: a genuine missing
+    dependency inside a command must not be disguised as an absent command.
+    """
+    module_name = COMMAND_MODULES[command]
+    try:
+        module = import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name:
+            raise
+        return
+    register = getattr(module, ARGUMENTS_ATTR, None)
+    if callable(register):
+        register(parser)
+
+
+def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     """Build the top-level parser and register the five subcommands.
 
-    Subcommand *flags* are deliberately absent: each `cmd_<name>.py` task owns
-    its own arguments. What is fixed here is the set of commands and the fact
-    that none of them is imported to register it.
+    Subcommand *flags* are not written here: each `cmd_<name>.py` owns its own
+    arguments and registers them through `ARGUMENTS_ATTR`. What is fixed here
+    is the set of commands, and the fact that at most one handler module is
+    imported to build a parser.
+
+    :param argv: The arguments about to be parsed. Given, the one command they
+        name has its flags registered; omitted, every subparser is bare - which
+        is what `--help` for the top-level parser and the structural tests want,
+        and is the shape this function had before the hook existed.
     """
     parser = _CliParser(prog=PROGRAM_NAME, description=DESCRIPTION)
     parser.add_argument(
@@ -159,9 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the installed npu-rag version and exit.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+    requested = None if argv is None else _registered_command(argv)
     for name in COMMAND_MODULES:
         summary = COMMAND_SUMMARIES[name]
-        subparsers.add_parser(name, help=summary, description=summary)
+        subparser = subparsers.add_parser(name, help=summary, description=summary)
+        if name == requested:
+            _register_arguments(subparser, name)
     return parser
 
 
@@ -226,9 +301,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns a process exit code; it does not call `sys.exit` itself, so it can
     be driven directly from a test.
     """
-    parser = build_parser()
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser(tokens)
     try:
-        args = parser.parse_args(None if argv is None else list(argv))
+        args = parser.parse_args(tokens)
     except SystemExit as exc:
         # `--help`, `--version` and every parse error land here.
         return _exit_status(exc.code)

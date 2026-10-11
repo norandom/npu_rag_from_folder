@@ -97,13 +97,36 @@ def test_ingest_dependency_versions_match_technology_stack() -> None:
 
 
 def test_default_state_path_is_gitignored() -> None:
-    """design.md, Modified Files: default state path ``.npu_rag/ingest.sqlite``."""
+    """design.md, Modified Files: default state path ``.npu_rag/ingest.sqlite``.
+
+    The assertion is *coverage*, not a literal line, because the literal was
+    the brittle half of this test. It originally required the exact entry
+    ``.npu_rag/ingest.sqlite``; on 2026-10-11 that entry was widened to the
+    directory ``.npu_rag/`` -- strictly stronger, since the same directory also
+    holds the LanceDB index whose ``text`` column stores archive content
+    verbatim -- and this test failed despite the thing it guards having got
+    better. A pin that breaks when its property is strengthened is pinning the
+    wrong thing.
+
+    So: find any ignore entry that actually covers the state path, and pin that
+    it covers it. An entry naming the file still passes, the directory entry
+    passes, and deleting both still fails -- which is the property that matters.
+    """
     lines = [
         line.strip()
         for line in GITIGNORE.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
-    assert DEFAULT_STATE_PATH in lines
+    covering = [
+        entry
+        for entry in lines
+        if DEFAULT_STATE_PATH == entry
+        or DEFAULT_STATE_PATH.startswith(entry.rstrip("/") + "/")
+    ]
+    assert covering, (
+        f"nothing in .gitignore covers {DEFAULT_STATE_PATH!r}; entries were "
+        f"{lines!r}. The ingest state database must never be committable."
+    )
 
 
 # --------------------------------------------------------------------------

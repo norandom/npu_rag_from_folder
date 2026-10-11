@@ -10,6 +10,20 @@ __pycache__/
 artifacts/
 benchmarks/
 
-# ingest pipeline state (default path; machine-local)
-.npu_rag/ingest.sqlite
+# Machine-local generated state: the whole default working directory, not just
+# one file in it. `.npu_rag/` holds the LanceDB index, the compiled NPU graphs
+# and the ingest database, and every one of them is derived, large, and
+# specific to this machine.
+#
+# This is a PRIVACY boundary, not only a size one. `index/schema.py` stores each
+# chunk's `text` column verbatim, so a committed index would publish the
+# contents of the personal archive it was built from - not merely vectors.
+# Measured 2026-10-11: `.npu_rag/artifacts/` was already covered, but only
+# incidentally by the bare `artifacts/` pattern above, while
+# `.npu_rag/lancedb/chunks.lance/...` was fully committable and `git status`
+# offered it for staging.
+#
+# Keep this as the directory, so a new sibling (a cache, a manifest, a log)
+# is covered the day it appears rather than the day someone notices.
+.npu_rag/
 
