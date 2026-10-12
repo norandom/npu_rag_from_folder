@@ -790,6 +790,42 @@ def test_search_help_imports_the_handler_but_nothing_heavy(tmp_path: Path) -> No
     assert "--top-k" in payload["stdout"]
 
 
+def test_index_help_lists_the_commands_own_flags() -> None:
+    """Design §3.5's four options for `index`, through the same hook (task 5.1a)."""
+    completed = _run_cli("index", "--help")
+    assert completed.returncode == 0
+    for flag in ("--archive-path", "--full-rebuild", "--provider", "--json"):
+        assert flag in completed.stdout, f"{flag} missing from `index --help`"
+    assert completed.stderr == ""
+
+
+def test_index_help_imports_the_handler_but_nothing_heavy(tmp_path: Path) -> None:
+    """Requirement 1.2 covers `npu-rag index --help` too.
+
+    `cmd_index` reaches `npu_rag.ingest`, which imports `transformers` through
+    `npu_rag.embedding.tokenize` and `onnxruntime` through its OCR describer -
+    so every one of those imports has to sit inside a function body. Stated
+    separately from the fast paths: the handler itself must be imported for its
+    flags to exist, and only the four heavy modules must not be.
+    """
+    payload = _run_probe(
+        tmp_path,
+        body=(
+            "from npu_rag.cli.main import main\n"
+            'payload["code"] = main(["index", "--help"])\n'
+        ),
+        name="index_help",
+    )
+    assert payload["code"] == 0
+    assert payload["heavy"] == [], (
+        f"`index --help` imported a forbidden module: {payload['heavy']}"
+    )
+    assert "npu_rag.cli.cmd_index" in payload["cli_modules"], (
+        "the flags cannot have been registered without importing the handler"
+    )
+    assert "--archive-path" in payload["stdout"]
+
+
 def test_handler_return_code_is_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-vacuity control for the dispatch tests: the code the handler returns
     is the code `main` returns, so a `return 0` hardcoded in dispatch dies."""
