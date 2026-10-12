@@ -27,3 +27,9 @@ benchmarks/
 # is covered the day it appears rather than the day someone notices.
 .npu_rag/
 
+
+# Scratch directories created by sandboxed review/implementation agents.
+# Some are written with ACLs that deny even reading them back, so they cannot
+# be removed without elevation and would otherwise make every `git status`
+# emit "could not open directory ... Permission denied".
+.tmp-*/

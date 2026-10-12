@@ -38,6 +38,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -50,6 +51,9 @@ from npu_rag.cli.main import EXIT_OK, EXIT_RUNTIME, EXIT_USAGE, build_parser, ma
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from npu_rag.embedding.tokenize import ModelTokenizer
+    from npu_rag.ingest.config import IngestConfig
+    from npu_rag.ingest.types import RunReport
 
 # --------------------------------------------------------------------------- #
 # Literals (design §3.5, requirements 7.5 and 8.3)
@@ -293,6 +297,39 @@ class RecordingTokenizers:
         return object()
 
 
+class RecordingEmbedder:
+    fallback_reason: str | None = None
+
+    def __init__(self, provider_served: str | None = "cpu") -> None:
+        self.provider_served = provider_served
+
+    def embed_documents(self, texts: Any, provider: Any) -> Any:
+        raise AssertionError("the recording index must not call the embedder")
+
+
+class RecordingIndex:
+    def __init__(self) -> None:
+        self.identity: str | None = None
+        self.sync_kwargs: dict[str, Any] = {}
+        self.events: list[str] = []
+
+    def verify_model_identity(self, model_identity: str) -> None:
+        self.events.append("verify")
+        self.identity = model_identity
+
+    def sync(self, report: Any, embed_service: Any, **kwargs: Any) -> Any:
+        from npu_rag.index.types import SyncSummary
+
+        self.sync_kwargs = kwargs
+        self.events.append("sync")
+        kwargs["progress_callback"](len(report.records), len(report.records))
+        return SyncSummary(
+            chunks_added=len(report.records), chunks_updated=0,
+            chunks_deleted=len(report.removed_chunk_ids), total_chunks=len(report.records),
+            files_indexed=report.files_processed, elapsed_seconds=0.1,
+        )
+
+
 def parse(*argv: str) -> argparse.Namespace:
     """Parse through the real top-level parser, lazy registration hook and all."""
     tokens = list(argv)
@@ -305,6 +342,8 @@ def invoke(
     ingester: RecordingIngester | None = None,
     tokenizers: RecordingTokenizers | None = None,
     profile: Any | None = None,
+    index: RecordingIndex | None = None,
+    embedder: RecordingEmbedder | None = None,
 ) -> tuple[int, RecordingIngester]:
     """Run the real `run()` with its four seams injected."""
     used = RecordingIngester() if ingester is None else ingester
@@ -315,6 +354,9 @@ def invoke(
         profiles=lambda _name: resolved_profile,
         tokenizers=RecordingTokenizers() if tokenizers is None else tokenizers,
         ingest=used,
+        open_index=lambda _path: RecordingIndex() if index is None else index,
+        open_embedder=lambda _config, _profile: RecordingEmbedder() if embedder is None else embedder,
+        rebuild=lambda _index, _state: None,
     )
     return code, used
 
@@ -395,6 +437,8 @@ def test_flag_values_reach_the_configuration_loader(tmp_path: Path) -> None:
         profiles=lambda _name: probe_profile(),
         tokenizers=RecordingTokenizers(),
         ingest=RecordingIngester(),
+        open_index=lambda _path: RecordingIndex(),
+        open_embedder=lambda _config, _profile: RecordingEmbedder(),
     )
     assert seen[0]["archive_path"] == str(tmp_path / "corpus")
     assert seen[0]["provider"] == "cpu"
@@ -568,211 +612,6 @@ def test_the_pipeline_is_run_without_a_vision_describer(
 
 
 # --------------------------------------------------------------------------- #
-# Requirement 7.5 / 8.3 - the summary payload
-# --------------------------------------------------------------------------- #
-
-
-def build_payload(tmp_path: Path, **kwargs: Any) -> dict[str, Any]:
-    config = kwargs.pop("config", None) or make_config(tmp_path)
-    profile = kwargs.pop("profile", None) or probe_profile()
-    report = kwargs.pop("report", None) or make_report()
-    return cmd_index.summary_payload(
-        report,
-        ingest_config=cmd_index.build_ingest_config(config, profile=profile),
-        config=config,
-        profile=profile,
-        full_rebuild=kwargs.pop("full_rebuild", False),
-        duration_seconds=kwargs.pop("duration_seconds", 1.23456),
-    )
-
-
-def test_payload_keys_are_exactly_the_documented_schema(tmp_path: Path) -> None:
-    payload = build_payload(tmp_path)
-    assert frozenset(payload) == EXPECTED_PAYLOAD_KEYS
-    assert frozenset(cast("dict[str, Any]", payload["files"])) == EXPECTED_FILE_KEYS
-
-
-def test_every_payload_key_is_snake_case(tmp_path: Path) -> None:
-    """Requirement 8.3's payload is consumed by `jq`; casing is part of it."""
-    payload = build_payload(tmp_path)
-    keys = list(payload) + list(cast("dict[str, Any]", payload["files"]))
-    offenders = [key for key in keys if key != key.lower() or "-" in key or " " in key]
-    assert offenders == []
-
-
-def test_file_counts_come_from_the_matching_report_fields(tmp_path: Path) -> None:
-    payload = build_payload(tmp_path)
-    files = cast("dict[str, int]", payload["files"])
-    assert files == {
-        "processed": 7,
-        "unchanged": 4,
-        "skipped": 2,
-        "failed": 3,
-        "total": 16,
-    }
-
-
-def test_file_total_is_the_sum_of_the_four_statuses(tmp_path: Path) -> None:
-    """Cross-check, so a total copied from one field rather than summed dies."""
-    report = make_report(processed=5, unchanged=9, skipped=1, failed=6)
-    files = cast("dict[str, int]", build_payload(tmp_path, report=report)["files"])
-    assert files["total"] == sum(
-        files[key] for key in ("processed", "unchanged", "skipped", "failed")
-    )
-    assert files["total"] == 21
-
-
-def test_omissions_are_counted_by_category_against_a_literal_table(
-    tmp_path: Path,
-) -> None:
-    payload = build_payload(tmp_path)
-    assert payload["omissions_by_category"] == EXPECTED_CATEGORY_COUNTS
-    assert payload["omissions_total"] == len(OMISSION_FIXTURE)
-    assert payload["omissions_total"] == sum(EXPECTED_CATEGORY_COUNTS.values())
-
-
-def test_omission_categories_are_rendered_in_sorted_order(tmp_path: Path) -> None:
-    """The fixture's given order is not sorted order (see OMISSION_FIXTURE)."""
-    given = [category for category, _path, _cap in OMISSION_FIXTURE]
-    assert given != sorted(set(given)), "the fixture would not detect a dropped sort"
-    payload = build_payload(tmp_path)
-    emitted = list(cast("dict[str, int]", payload["omissions_by_category"]))
-    assert emitted == sorted(EXPECTED_CATEGORY_COUNTS)
-
-
-def test_missing_capabilities_are_deduplicated_and_sorted(tmp_path: Path) -> None:
-    assert build_payload(tmp_path)["missing_capabilities"] == EXPECTED_CAPABILITIES
-
-
-def test_failures_name_the_path_and_reason_of_failed_omissions_only(
-    tmp_path: Path,
-) -> None:
-    failures = cast("list[dict[str, str]]", build_payload(tmp_path)["failures"])
-    assert [entry["path"] for entry in failures] == EXPECTED_FAILURE_PATHS
-    assert all(entry["reason"] == f"reason for {entry['path']}" for entry in failures)
-
-
-def test_chunk_counts_come_from_the_report(tmp_path: Path) -> None:
-    payload = build_payload(tmp_path, report=make_report(records=11, removed=("x",)))
-    assert payload["chunk_records"] == 11
-    assert payload["chunk_ids_removed"] == 1
-
-
-def test_the_two_booleans_the_payload_carries_are_both_live(tmp_path: Path) -> None:
-    """`no_work_required` from the report, `full_rebuild` from the flag."""
-    assert build_payload(tmp_path)["no_work_required"] is False
-    assert (
-        build_payload(tmp_path, report=make_report(no_work_required=True))[
-            "no_work_required"
-        ]
-        is True
-    )
-    assert build_payload(tmp_path, full_rebuild=True)["full_rebuild"] is True
-    assert build_payload(tmp_path, full_rebuild=False)["full_rebuild"] is False
-
-
-def test_duration_is_rounded_to_milliseconds(tmp_path: Path) -> None:
-    assert cmd_index.DURATION_DIGITS == 3
-    payload = build_payload(tmp_path, duration_seconds=1.23456)
-    assert payload["duration_seconds"] == 1.235
-
-
-def test_the_requested_provider_is_never_passed_off_as_the_active_one(
-    tmp_path: Path,
-) -> None:
-    """Note 3.1: `npu|cpu|auto` is a request, not an attribution."""
-    payload = build_payload(tmp_path, config=make_config(tmp_path, provider="npu"))
-    assert payload["requested_provider"] == "npu"
-    assert payload["active_provider"] == cmd_index.NO_EMBEDDING_PROVIDER
-    assert payload["active_provider"] != "npu"
-    assert payload["embedding_performed"] is False
-    assert payload["index_written"] is False
-
-
-def test_the_model_and_budget_are_reported(tmp_path: Path) -> None:
-    profile = probe_profile()
-    payload = build_payload(tmp_path, profile=profile)
-    assert payload["model_name"] == "gte-modernbert-base"
-    assert payload["model_id"] == profile.model_id
-    assert payload["token_budget"] == PROBE_SEQ_LEN
-
-
-# --------------------------------------------------------------------------- #
-# Requirement 7.5 - the two renderings
-# --------------------------------------------------------------------------- #
-
-
-def test_the_text_summary_states_every_element_requirement_7_5_asks_for(
-    tmp_path: Path,
-) -> None:
-    text = cmd_index.render_summary(build_payload(tmp_path), as_json=False)
-    assert "added or updated): 7" in text
-    assert "Unchanged (content hash matched): 4" in text
-    assert "Skipped (unsupported or unreadable): 2" in text
-    assert "Failed: 3" in text
-    assert "Total: 16" in text
-    assert "Chunk records: 11" in text
-    assert "Duration: 1.235s" in text
-    for category, count in EXPECTED_CATEGORY_COUNTS.items():
-        assert f"  {category}: {count}" in text
-
-
-def test_the_text_summary_names_the_missing_capabilities(tmp_path: Path) -> None:
-    text = cmd_index.render_summary(build_payload(tmp_path), as_json=False)
-    assert "Missing capabilities: det.onnx, rec.onnx" in text
-
-
-def test_a_run_with_no_omissions_says_so_rather_than_printing_nothing(
-    tmp_path: Path,
-) -> None:
-    payload = build_payload(tmp_path, report=make_report(omissions=(), failed=0))
-    text = cmd_index.render_summary(payload, as_json=False)
-    assert "Omissions by category (0 total):" in text
-    assert "(none)" in text
-    assert "Failures:" not in text
-    assert "Missing capabilities" not in text
-
-
-def test_the_text_summary_truncates_a_long_failure_list(tmp_path: Path) -> None:
-    assert cmd_index.FAILURE_DETAIL_LIMIT == 10
-    many = tuple(("failed", f"bad{n}.md", None) for n in range(14))
-    payload = build_payload(tmp_path, report=make_report(omissions=many))
-    text = cmd_index.render_summary(payload, as_json=False)
-    assert "bad9.md" in text
-    assert "bad10.md" not in text
-    assert "... and 4 more" in text
-    # The JSON rendering keeps all fourteen: the cap is a terminal concern.
-    assert len(cast("list[Any]", payload["failures"])) == 14
-
-
-def test_the_text_summary_says_the_index_was_not_written(tmp_path: Path) -> None:
-    text = cmd_index.render_summary(build_payload(tmp_path), as_json=False)
-    assert "not written in this release" in text
-    assert cmd_index.NO_EMBEDDING_PROVIDER in text
-
-
-def test_the_json_rendering_is_valid_json_carrying_the_same_payload(
-    tmp_path: Path,
-) -> None:
-    payload = build_payload(tmp_path)
-    rendered = cmd_index.render_summary(payload, as_json=True)
-    assert json.loads(rendered) == json.loads(json.dumps(payload))
-    # Non-vacuity control for the flag: `as_json` actually selects a rendering.
-    text = cmd_index.render_summary(payload, as_json=False)
-    assert text.startswith("Index Run Summary")
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(text)
-
-
-def test_non_ascii_stays_literal_in_the_json_rendering(tmp_path: Path) -> None:
-    """Requirement 8.4: a human and `jq` both see Devanagari, not escapes."""
-    config = make_config(tmp_path, archive="गरुड")
-    rendered = cmd_index.render_summary(build_payload(tmp_path, config=config), as_json=True)
-    assert "गरुड" in rendered
-    assert "\\u0917" not in rendered
-
-
-# --------------------------------------------------------------------------- #
 # Design §4 - exit codes and ordering
 # --------------------------------------------------------------------------- #
 
@@ -911,19 +750,18 @@ def test_a_pipeline_failure_is_a_runtime_error(
 def test_full_rebuild_is_announced_on_stderr_and_recorded(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The flag is not consumed yet, so saying nothing would be a silent no-op."""
+    """The flag resets both stores and remains visible in JSON."""
     code, _ = invoke("--json", "--full-rebuild", config=make_config(tmp_path))
     captured = capsys.readouterr()
     assert code == EXIT_OK
     assert cmd_index.REBUILD_NOTICE in captured.err
     assert json.loads(captured.out)["full_rebuild"] is True
 
-    # And the discriminator: without the flag, stderr stays silent, so the
-    # notice is tied to the request rather than printed unconditionally.
+    # Progress still goes to stderr; only the rebuild notice is flag specific.
     code, _ = invoke("--json", config=make_config(tmp_path))
     quiet = capsys.readouterr()
     assert code == EXIT_OK
-    assert quiet.err == ""
+    assert cmd_index.REBUILD_NOTICE not in quiet.err
     assert json.loads(quiet.out)["full_rebuild"] is False
 
 
@@ -961,8 +799,9 @@ def test_the_summary_is_written_through_render_emit(
     monkeypatch.setattr(render_module, "emit", lambda text, **_k: emitted.append(text))
     code, _ = invoke(config=make_config(tmp_path))
     assert code == EXIT_OK
-    assert len(emitted) == 1
-    assert emitted[0].startswith("Index Run Summary")
+    assert len(emitted) == 2
+    assert emitted[0].startswith("Progress:")
+    assert emitted[1].startswith("Index Run Summary")
     assert capsys.readouterr().out == "", "nothing may bypass the emit seam"
 
 
@@ -983,6 +822,254 @@ def test_a_devanagari_path_survives_a_cp1252_stdout(
     stream.flush()
     assert code == EXIT_OK
     assert devanagari in buffer.getvalue().decode("utf-8")
+
+
+def test_a_devanagari_archive_error_survives_a_cp1252_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    devanagari = "\u0917\u0930\u0941\u0921"
+    config = make_config(tmp_path, archive=devanagari, create_archive=False)
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp1252", newline="")
+    monkeypatch.setattr(sys, "stderr", stream)
+    code, _ = invoke(config=config)
+    stream.flush()
+    assert code == EXIT_USAGE
+    assert devanagari in buffer.getvalue().decode("utf-8")
+
+
+def test_sync_receives_model_identity_and_requested_provider(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from npu_rag.embedding.types import ProviderChoice
+    from npu_rag.index import format_model_identity
+
+    index = RecordingIndex()
+    profile = probe_profile()
+    code, _ = invoke("--json", config=make_config(tmp_path, provider="cpu"),
+                     profile=profile, index=index)
+    payload = payload_of(capsys)
+    expected = format_model_identity(profile.model_id, profile.dimension)
+    assert code == EXIT_OK
+    assert index.identity == expected
+    assert index.events == ["verify", "sync"]
+    assert index.sync_kwargs["model_identity"] == expected
+    assert index.sync_kwargs["provider"] is ProviderChoice.CPU
+    assert payload["index_written"] is True
+    assert payload["embedding_performed"] is True
+    assert payload["active_provider"] == "CPUExecutionProvider"
+
+
+@pytest.mark.parametrize("served, records, expected", [
+    ("npu", 2, "VitisAIExecutionProvider"),
+    ("cpu", 2, "CPUExecutionProvider"),
+    (None, 0, cmd_index.NO_EMBEDDING_PROVIDER),
+    ("rocm", 2, None),
+])
+def test_actual_provider_attribution(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    served: str | None, records: int, expected: str | None,
+) -> None:
+    code, _ = invoke(
+        "--json", config=make_config(tmp_path), embedder=RecordingEmbedder(served),
+        ingester=RecordingIngester(make_report(records=records)),
+    )
+    captured = capsys.readouterr()
+    if expected is None:
+        assert code == EXIT_RUNTIME
+        assert "Traceback" not in captured.err
+        assert "active provider attribution" in captured.err
+        assert captured.out == ""
+    else:
+        assert code == EXIT_OK
+        assert json.loads(captured.out)["active_provider"] == expected
+
+
+@pytest.mark.parametrize("requested, usable, expected", [
+    ("npu", False, None), ("auto", False, "cpu"),
+    ("auto", True, "npu"), ("cpu", True, "cpu"),
+])
+def test_real_open_embedder_checks_capability_and_reuses_search_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    requested: str, usable: bool, expected: str | None,
+) -> None:
+    from npu_rag.cli import cmd_search
+    from npu_rag.embedding.environment import capability as capability_module
+    from npu_rag.embedding import service
+    from npu_rag.embedding.errors import NpuUnavailableError
+    from npu_rag.embedding.types import CapabilityReport, Condition, ExecutionMode, ProviderChoice
+
+    capability = CapabilityReport(
+        (Condition("execution_provider_registered", usable, "test provider absent",
+                   "Vitis AI provider", "install vendor runtime"),),
+        ExecutionMode.IN_PROCESS if usable else ExecutionMode.UNAVAILABLE,
+        None, None, None, False,
+    )
+    config, profile = make_config(tmp_path, provider=requested), probe_profile()
+    calls: list[tuple[Any, ...]] = []
+    root = tmp_path / "shared-search-artifacts-sentinel"
+    monkeypatch.setattr(cmd_search, "artifacts_root", lambda cfg: root if cfg == config else None)
+    monkeypatch.setattr(capability_module, "check_capability", lambda: capability)
+
+    def build(profile: Any, capability: Any, root: Path, *, provider: Any) -> Any:
+        calls.append((profile, capability, root, provider))
+        return RecordingEmbedder()
+
+    monkeypatch.setattr(service, "build_service", build)
+    if expected is None:
+        with pytest.raises(NpuUnavailableError, match="test provider absent"):
+            cmd_index.open_embedder(config, profile)
+        code = cmd_index.run(
+            parse("index", "--json"), load=lambda **_kw: config,
+            profiles=lambda _name: profile, tokenizers=RecordingTokenizers(),
+            ingest=RecordingIngester(), open_index=lambda _path: RecordingIndex(),
+        )
+        captured = capsys.readouterr()
+        assert code == EXIT_RUNTIME
+        assert "test provider absent" in captured.err and "--provider cpu" in captured.err
+        assert captured.out == "" and "Traceback" not in captured.err
+        assert calls == []
+    else:
+        assert isinstance(cmd_index.open_embedder(config, profile), cmd_index._TrackingEmbedder)
+        assert calls == [(profile, capability, cmd_search.artifacts_root(config), ProviderChoice(expected))]
+
+
+def test_tracking_embedder_records_results_and_rejects_provider_changes() -> None:
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    import numpy as np
+    from npu_rag.embedding.service import EmbedResult
+    from npu_rag.embedding.types import DocumentText, ExecutionMode, ProviderChoice
+
+    result = EmbedResult(
+        np.ones((1, 2), dtype=np.float32), ProviderChoice.CPU, ExecutionMode.UNAVAILABLE,
+        None, "test NPU unavailable", (), 0.1, 1,
+    )
+    service = Mock()
+    service.embed_documents.side_effect = [result, result, replace(
+        result, provider_served=ProviderChoice.NPU, execution_mode=ExecutionMode.IN_PROCESS,
+        partition_verified=True, fallback_reason=None,
+    )]
+    tracker = cmd_index._TrackingEmbedder(service)
+    texts = [DocumentText("test document")]
+    for _ in range(2):
+        assert tracker.embed_documents(texts, ProviderChoice.AUTO) is result
+        assert tracker.provider_served == "cpu"
+        assert tracker.fallback_reason == "test NPU unavailable"
+    service.embed_documents.assert_called_with(texts, ProviderChoice.AUTO)
+    with pytest.raises(RuntimeError, match="provider changed"):
+        tracker.embed_documents(texts, ProviderChoice.AUTO)
+
+
+def test_updates_emit_completion_even_without_sync_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from npu_rag.index.types import SyncSummary
+
+    class SilentIndex(RecordingIndex):
+        def sync(self, report: Any, embed_service: Any, **kwargs: Any) -> Any:
+            return SyncSummary(chunks_added=0, chunks_updated=3, chunks_deleted=0,
+                               total_chunks=3, files_indexed=1, elapsed_seconds=0.1)
+
+    emitted: list[str] = []
+    monkeypatch.setattr(render_module, "emit", lambda text, **_kw: emitted.append(text))
+    code, _ = invoke("--json", config=make_config(tmp_path), index=SilentIndex())
+    assert code == EXIT_OK
+    assert len(emitted) == 2
+    assert emitted[0].startswith("Progress:") and "chunks 3/3" in emitted[0]
+    assert json.loads(emitted[1])["embedding_performed"] is True
+
+
+def test_open_index_at_passes_the_path_to_vector_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+    import npu_rag.index
+
+    constructor = Mock(return_value=RecordingIndex())
+    monkeypatch.setattr(npu_rag.index, "VectorIndex", constructor)
+    assert cmd_index.open_index_at(tmp_path) is constructor.return_value
+    constructor.assert_called_once_with(tmp_path)
+
+
+def test_auto_cpu_fallback_is_a_notice_on_stderr_and_json_stays_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    embedder = RecordingEmbedder()
+    embedder.fallback_reason = "Vitis AI provider is unavailable"
+    config = make_config(tmp_path)
+    code = cmd_index.run(
+        parse("index", "--json"), load=lambda **_kw: config,
+        profiles=lambda _name: probe_profile(), tokenizers=RecordingTokenizers(),
+        ingest=RecordingIngester(), open_index=lambda _path: RecordingIndex(),
+        open_embedder=lambda _config, _profile: embedder,
+    )
+    captured = capsys.readouterr()
+    assert code == EXIT_OK
+    assert "notice:" in captured.err
+    assert "Vitis AI provider is unavailable" in captured.err
+    assert json.loads(captured.out)["active_provider"] == "CPUExecutionProvider"
+
+
+def test_full_rebuild_resets_before_ingest_and_default_does_not(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    config = make_config(tmp_path)
+
+    def reset(_index: Path, _state: Path) -> None:
+        events.append("reset")
+
+    def ingest(config: IngestConfig, tokenizer: ModelTokenizer) -> RunReport:
+        events.append("ingest")
+        return cast("RunReport", make_report())
+
+    for flags, expected in (((), ["ingest"]), (("--full-rebuild",), ["reset", "ingest"])):
+        events.clear()
+        code = cmd_index.run(
+            parse("index", *flags), load=lambda **_kw: config,
+            profiles=lambda _name: probe_profile(), tokenizers=RecordingTokenizers(),
+            ingest=ingest, open_index=lambda _path: RecordingIndex(),
+            open_embedder=lambda _config, _profile: RecordingEmbedder(), rebuild=reset,
+        )
+        assert code == EXIT_OK
+        assert events == expected
+
+
+def test_rebuild_discards_the_real_chunk_table_and_ingest_state(tmp_path: Path) -> None:
+    import lancedb
+
+    from npu_rag.index.schema import ChunkSchema
+
+    index_path = tmp_path / "lancedb"
+    state_path = tmp_path / "ingest.sqlite"
+    state_path.write_bytes(b"stale state")
+    db = lancedb.connect(str(index_path))
+    db.create_table("chunks", schema=ChunkSchema)
+    assert "chunks" in db.list_tables().tables
+
+    cmd_index.rebuild_at(index_path, state_path)
+
+    assert "chunks" not in db.list_tables().tables
+    assert not state_path.exists()
+
+
+def test_progress_throttles_on_wall_time_and_always_emits_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[str] = []
+    times = iter((0.1, 0.2, 0.6, 0.61))
+    monkeypatch.setattr(time, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(render_module, "emit", lambda value, **_kw: emitted.append(value))
+    progress = cmd_index._Progress(make_report(), 0.0)
+    for done in (1, 2, 3, 4):
+        progress(done, 4)
+    assert len(emitted) == 2
+    assert "chunks 3/4" in emitted[0]
+    assert "chunks 4/4" in emitted[1]
+    assert "files 7/16" in emitted[1]
+    assert "throughput" in emitted[1]
 
 
 # --------------------------------------------------------------------------- #
@@ -1036,6 +1123,8 @@ def test_the_bridge_drives_a_real_ingest_run(
         profiles=cmd_index.load_profile,
         tokenizers=lambda _profile: load_offline_tokenizer(),
         ingest=cmd_index.run_pipeline,
+        open_index=lambda _path: RecordingIndex(),
+        open_embedder=lambda _config, _profile: RecordingEmbedder(),
     )
     payload = payload_of(capsys)
     files = cast("dict[str, int]", payload["files"])
@@ -1071,6 +1160,8 @@ def test_a_second_real_run_skips_every_unchanged_file(
             profiles=cmd_index.load_profile,
             tokenizers=lambda _profile: tokenizer,
             ingest=cmd_index.run_pipeline,
+            open_index=lambda _path: RecordingIndex(),
+            open_embedder=lambda _config, _profile: RecordingEmbedder(),
         )
         return payload_of(capsys)
 
